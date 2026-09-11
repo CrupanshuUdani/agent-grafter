@@ -1,2 +1,8 @@
 /target/
 Cargo.lock.bak
+
+# Local-only build configuration. This project's canonical checkout can live on
+# a filesystem that refuses to execute build artifacts, which requires pointing
+# the target directory elsewhere. That path is machine-specific and must never
+# be committed.
+/.cargo/config.toml
