@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --all-targets --verbose
+      - name: Test
+        run: cargo test --all-targets --verbose -- --nocapture
+
+      # Enforces Global Constraint 6. #[cfg(windows)] tests do not FAIL on
+      # other hosts, they are absent -- so assert the flagship test was really
+      # executed here rather than silently compiled out or deleted. Runs
+      # inside the matrix job; a second windows runner would prove nothing
+      # extra.
+      - name: Assert the safety suite actually ran on Windows
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test --test safety -- --nocapture 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "removing_a_dir_link_never_deletes_the_targets_contents" \
+            || { echo "::error::flagship safety test did not run on Windows"; exit 1; }
+          echo "$out" | grep -qE "test result: ok\. 2 passed" \
+            || { echo "::error::expected exactly 2 safety tests to pass on Windows"; exit 1; }
+
+  fmt-and-clippy:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
