@@ -21,5 +21,6 @@ pub mod capability;
 pub mod classify;
 pub mod copy;
 pub mod create;
+pub mod materialize;
 pub mod op;
 pub mod remove;
