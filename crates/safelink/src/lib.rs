@@ -19,6 +19,7 @@ fn windows_link_semantics_are_not_validated_on_this_platform() {
 
 pub mod capability;
 pub mod classify;
+pub mod copy;
 pub mod create;
 pub mod op;
 pub mod remove;
