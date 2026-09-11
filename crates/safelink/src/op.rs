@@ -36,7 +36,7 @@ mod tests {
     fn entry_carries_an_explicit_op() {
         let e = Entry {
             source: PathBuf::from("/src/AGENTS.md"),
-            dest: PathBuf::from("/home/u/.claude/AGENTS.md"),
+            dest: PathBuf::from("/home/u/.config/agent/AGENTS.md"),
             op: LinkOp::FileCopy,
         };
         assert_eq!(e.op, LinkOp::FileCopy);
