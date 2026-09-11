@@ -9,3 +9,16 @@ Cargo.lock.bak
 
 # Local-only developer helpers carrying machine-specific paths.
 /scripts-local/
+
+# AI coding-agent settings and scratch state. This repo is private today but
+# intended to go public once built; agent-tool config is machine/account
+# specific and must never be committed or exposed, regardless of what any
+# individual tool currently writes to it.
+/.claude/
+/.cursor/
+/.codex/
+/.aider*
+/.windsurf/
+/.cline/
+CLAUDE.md
+AGENTS.md
