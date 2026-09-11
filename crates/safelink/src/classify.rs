@@ -20,8 +20,25 @@ pub fn classify(path: &Path) -> io::Result<LinkClass> {
     // Order matters. Check the junction first: a junction's mode bits are
     // not a reliable discriminator, so `is_symlink()` must never be the
     // first question asked on Windows. See Global Constraint 5.
-    if junction::exists(path)? {
-        return Ok(LinkClass::DirLink);
+    //
+    // `junction::exists` does NOT return `Ok(false)` for an ordinary file or
+    // directory — it returns `Err` from the underlying FSCTL_GET_REPARSE_POINT
+    // call, with raw OS error 4390 (ERROR_NOT_A_REPARSE_POINT). Confirmed by
+    // reading `junction` v2.0.0's own source (`internals.rs`): `Ok(false)` is
+    // reserved for a path that does not exist at all; every reparse-point
+    // query on an existing-but-plain object surfaces as this specific error
+    // code instead. Blindly propagating it with `?` made `classify` return
+    // `Err` for every plain file and directory on Windows — caught only when
+    // this code first ran on a real Windows kernel in CI, exactly the gap
+    // Global Constraint 6 warns about. Only this one error code means
+    // "not a junction, keep looking"; anything else (permission denied, path
+    // too long, etc.) is a genuine failure and must still propagate.
+    const ERROR_NOT_A_REPARSE_POINT: i32 = 4390;
+    match junction::exists(path) {
+        Ok(true) => return Ok(LinkClass::DirLink),
+        Ok(false) => {}
+        Err(e) if e.raw_os_error() == Some(ERROR_NOT_A_REPARSE_POINT) => {}
+        Err(e) => return Err(e),
     }
 
     let md = std::fs::symlink_metadata(path)?;
