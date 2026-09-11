@@ -1,0 +1,45 @@
+//! Manual smoke test. Run this on the Windows boot as a standard,
+//! non-elevated user with Developer Mode OFF:
+//!
+//!   cargo run --example smoke -- dir  C:\path\to\source C:\path\to\dest
+//!   cargo run --example smoke -- file C:\path\to\src.md C:\path\to\dest.md
+
+use safelink::capability::RealProbe;
+use safelink::materialize::materialize;
+use safelink::op::{Entry, LinkOp};
+use std::path::PathBuf;
+
+fn main() -> std::io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 4 {
+        eprintln!("usage: smoke <dir|file> <source> <dest>");
+        std::process::exit(2);
+    }
+
+    let op = match args[1].as_str() {
+        "dir" => LinkOp::DirectoryLink,
+        "file" => LinkOp::FileSymlink,
+        other => {
+            eprintln!("unknown mode {other:?}; expected 'dir' or 'file'");
+            std::process::exit(2);
+        }
+    };
+
+    let entry = Entry {
+        source: PathBuf::from(&args[2]),
+        dest: PathBuf::from(&args[3]),
+        op,
+    };
+
+    println!("symlink capability: {}", {
+        use safelink::capability::SymlinkProbe;
+        RealProbe.can_create_file_symlink()
+    });
+
+    let applied = materialize(&entry, &RealProbe)?;
+    println!("declared: {:?}\napplied:  {:?}", entry.op, applied);
+    if applied != entry.op {
+        println!("(downgraded — this is the expected fallback, not an error)");
+    }
+    Ok(())
+}
