@@ -16,8 +16,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      # Opt-in exFAT test volume. The fs_capability tests skip loudly when
+      # SAFELINK_EXFAT_TEST_DIR is absent, so a failure here does NOT fail the
+      # build — it only means exFAT coverage is skipped on this runner.
+      #
+      # Linux: a 64M image in a file, loopback-mounted via `mount -o loop`.
+      #         GitHub's Ubuntu runners have sudo and the exfatprogs package
+      #         is in the default apt repos.
+      - name: Set up exFAT test volume (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          truncate -s 64M /tmp/exfat.img
+          sudo apt-get update -qq && sudo apt-get install -y -qq exfatprogs
+          sudo mkfs.exfat /tmp/exfat.img
+          sudo mkdir -p /mnt/exfat
+          sudo mount -o loop,uid=$(id -u),gid=$(id -g) /tmp/exfat.img /mnt/exfat
+          echo "SAFELINK_EXFAT_TEST_DIR=/mnt/exfat" >> $GITHUB_ENV
+
       - name: Build
         run: cargo build --all-targets --verbose
+
       - name: Test
         run: cargo test --all-targets --verbose -- --nocapture
 
