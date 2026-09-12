@@ -31,9 +31,11 @@ fn main() -> std::io::Result<()> {
         op,
     };
 
-    println!("symlink capability: {}", {
+    println!("symlink capability at the destination: {}", {
         use safelink::capability::SymlinkProbe;
-        RealProbe.can_create_file_symlink()
+        // Asked about the destination specifically -- on exFAT/FAT32 this is
+        // `false` even though /tmp would say `true`. See Task 13.
+        RealProbe.can_create_file_symlink(&entry.dest)
     });
 
     // Defaults: the smoke test is a manual one-shot against paths the

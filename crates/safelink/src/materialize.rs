@@ -101,24 +101,33 @@ pub fn materialize(
     prepare_dest_parent(&entry.dest, options)?;
 
     let applied = match entry.op {
-        LinkOp::DirectoryLink => {
-            create_dir_link(&entry.source, &entry.dest).map(|()| LinkOp::DirectoryLink)
-        }
-        LinkOp::FileCopy => copy_atomic(&entry.source, &entry.dest).map(|()| LinkOp::FileCopy),
+        LinkOp::DirectoryLink => create_dir_link(&entry.source, &entry.dest)
+            .map(|()| LinkOp::DirectoryLink)
+            // Routed through the filesystem-aware annotator, not the generic
+            // one: on exFAT/FAT32 this failure is EPERM but has nothing to do
+            // with permissions. See `annotate_dir_link_error`.
+            .map_err(|e| annotate_dir_link_error(&entry.dest, probe, e)),
+        LinkOp::FileCopy => copy_atomic(&entry.source, &entry.dest)
+            .map(|()| LinkOp::FileCopy)
+            .map_err(|e| annotate_dest_error(&entry.dest, e)),
         LinkOp::FileSymlink => {
-            if probe.can_create_file_symlink() {
-                symlink_file(&entry.source, &entry.dest).map(|()| LinkOp::FileSymlink)
+            if probe.can_create_file_symlink(&entry.dest) {
+                symlink_file(&entry.source, &entry.dest)
+                    .map(|()| LinkOp::FileSymlink)
+                    .map_err(|e| annotate_dest_error(&entry.dest, e))
             } else {
-                copy_atomic(&entry.source, &entry.dest).map(|()| LinkOp::FileCopy)
+                copy_atomic(&entry.source, &entry.dest)
+                    .map(|()| LinkOp::FileCopy)
+                    .map_err(|e| annotate_dest_error(&entry.dest, e))
             }
         }
     };
 
-    // `map_err`, never a fallback: an error stays an error. The result is
-    // still `Err` in every case it was `Err` before — only the message
-    // improves. See `directory_link_failure_propagates_as_an_error_not_a_
-    // silent_downgrade` for the property this must not break.
-    applied.map_err(|e| annotate_dest_error(&entry.dest, e))
+    // Each arm has already annotated its own error with the context only it
+    // had. Returning as-is; an error stays an error, never a fallback. See
+    // `directory_link_failure_propagates_as_an_error_not_a_silent_downgrade`
+    // for the property this must not break.
+    applied
 }
 
 /// Apply the missing-parent policy to `dest`, before anything touches it.
@@ -156,6 +165,32 @@ fn prepare_dest_parent(dest: &Path, options: &MaterializeOptions) -> io::Result<
     std::fs::create_dir_all(parent).map_err(|e| annotate_dest_error(dest, e))
 }
 
+/// Whether any writable ancestor of `dest` can hold a link.
+///
+/// Walks upward until the probe gets a definite `true`, or the ancestry is
+/// exhausted. Used only to tell a filesystem limitation apart from a
+/// permissions problem, both of which surface as `EPERM`.
+///
+/// Walking up is sound because a filesystem's link support is uniform across
+/// the mount: if any directory on it accepts a link, the mount supports links.
+/// The walk stops at a mount boundary in the sense that matters -- if it
+/// crosses onto a different filesystem that DOES support links while the
+/// destination's does not, the worst case is falling back to the permissions
+/// message, which is the pre-Task-13 behaviour, never a wrong success.
+fn writable_ancestor_supports_links(dest: &Path, probe: &dyn SymlinkProbe) -> bool {
+    let mut cursor = dest.parent();
+    while let Some(dir) = cursor {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        if dir.is_dir() && probe.can_create_file_symlink(&dir.join("probe")) {
+            return true;
+        }
+        cursor = dir.parent();
+    }
+    false
+}
+
 /// Name the destination in a permission failure; pass everything else
 /// through untouched.
 ///
@@ -181,6 +216,52 @@ fn annotate_dest_error(dest: &Path, e: io::Error) -> io::Error {
             "permission denied writing destination {}: {e} -- refusing to \
              materialize. Fix the permissions on the destination or its parent \
              directory and re-run; the destination was left untouched.",
+            dest.display()
+        ),
+    )
+}
+
+/// Annotate a failed `DirectoryLink` when the filesystem, not the permissions,
+/// is what refused.
+///
+/// exFAT, FAT32 and UDF have no mechanism for a directory link at all — no
+/// junction, no symlink. On Linux the attempt fails with `EPERM`, which is
+/// **indistinguishable from a genuine ACL or ownership failure**, so
+/// `annotate_dest_error` would confidently advise fixing permissions that are
+/// already correct. That is precisely the admin-rights red herring this
+/// project exists to remove (Task 11 eliminated the same class of misleading
+/// error for long paths), so it must not be reintroduced here.
+///
+/// Deliberately NOT a downgrade. `DirectoryLink` has no copy fallback by
+/// design — substituting a recursive directory copy would turn one link into
+/// an unbounded duplication of the source, and the engine does not guess. The
+/// only correct move is to refuse and say why, so the manifest author can
+/// choose a different destination or a different op.
+///
+/// Probed rather than assumed: the filesystem is asked whether it can hold a
+/// link *at that location*, for the same reason `RealProbe` takes a path —
+/// filesystem names are not a capability contract.
+fn annotate_dir_link_error(dest: &Path, probe: &dyn SymlinkProbe, e: io::Error) -> io::Error {
+    // The probe already determined the filesystem cannot hold a link. When
+    // it can't, the OS error is an unreliable signal about *why*: on Linux
+    // exFAT it is EPERM, on Windows exFAT it is ERROR_INVALID_FUNCTION
+    // (ErrorKind::Uncategorized), and other platforms may use other codes.
+    // The probe's verdict is the ground truth, so a creatable link anywhere
+    // on this mount means the real problem is permissions on `dest`; anything
+    // else means the filesystem refuses and no change of mode will help.
+    if writable_ancestor_supports_links(dest, probe) {
+        return annotate_dest_error(dest, e);
+    }
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "cannot create a directory link at {}: the destination's \
+             filesystem does not support links ({e}). This is a filesystem \
+             limitation, not a permissions problem -- exFAT, FAT32 and UDF \
+             have no junction or symlink mechanism, so no change of ownership \
+             or mode will help. Choose a destination on a filesystem that \
+             supports links (NTFS, ext4, btrfs, APFS), or declare this entry \
+             as a FileCopy if duplicating the contents is acceptable.",
             dest.display()
         ),
     )

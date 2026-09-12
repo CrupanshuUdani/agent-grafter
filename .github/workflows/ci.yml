@@ -16,8 +16,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      # Opt-in exFAT test volume — Windows only. The fs_capability tests skip
+      # loudly when SAFELINK_EXFAT_TEST_DIR is absent, so a failure here does
+      # NOT fail the build — it only means exFAT coverage is skipped.
+      #
+      # Creates a 64MB dynamic VHDX, mounts it, formats exFAT, exports the
+      # drive letter. New-VHD/Mount-VHD require the Hyper-V module, which is
+      # present on GitHub's Windows runners (they are Hyper-V VMs) but not
+      # guaranteed. continue-on-error keeps the build green if setup fails.
+      - name: Set up exFAT test volume
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vhd = 'C:\safelink-exfat.vhdx'
+          $size = 64MB
+
+          New-VHD -Path $vhd -SizeBytes $size -Dynamic
+          $vhdInfo = Mount-VHD -Path $vhd -PassThru
+          $disk = $vhdInfo | Get-Disk
+          $disk | Initialize-Disk -PartitionStyle MBR -Confirm:$false
+          $partition = $disk | New-Partition -UseMaximumSize -AssignDriveLetter
+          $vol = $partition | Format-Volume -FileSystem exFAT -NewFileSystemLabel SAFELINK -Confirm:$false
+          $letter = ($vol | Get-Volume).DriveLetter
+          if (-not $letter) { throw 'no drive letter assigned' }
+          $dir = "${letter}:\"
+          $actualFs = (Get-Volume -DriveLetter $letter).FileSystemType
+          if ($actualFs -ne 'exFAT') { throw "expected exFAT, got $actualFs" }
+          "SAFELINK_EXFAT_TEST_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build
         run: cargo build --all-targets --verbose
+
       - name: Test
         run: cargo test --all-targets --verbose -- --nocapture
 

@@ -19,7 +19,17 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
     // manifest destination being created, not traversed past its length.
     let target = crate::paths::verbatim(target)?;
     // junction::create takes (target, junction) — target first.
-    junction::create(&target, link)
+    // On failure it may leave the empty `link` directory behind (it creates
+    // the directory before setting the reparse point), so clean it up. Use
+    // `remove_dir`, never `remove_dir_all`: if anything other than an empty
+    // directory exists at `link`, something worse has gone wrong and we must
+    // not silently delete it.
+    junction::create(&target, link).map_err(|e| {
+        if link.is_dir() {
+            let _ = std::fs::remove_dir(link);
+        }
+        e
+    })
 }
 
 #[cfg(unix)]
