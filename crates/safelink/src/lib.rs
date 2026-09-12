@@ -23,4 +23,5 @@ pub mod copy;
 pub mod create;
 pub mod materialize;
 pub mod op;
+pub mod paths;
 pub mod remove;

@@ -11,8 +11,15 @@ use std::path::Path;
 /// project exists to remove.
 #[cfg(windows)]
 pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
+    // A target past MAX_PATH (260 chars) fails with a generic error that
+    // reads like a permissions problem unless it carries the `\\?\`
+    // verbatim prefix -- see Task 11 and `paths::verbatim`. `link` does not
+    // need the same treatment here: `junction::create` builds the junction's
+    // reparse data from `target`, and `link` is the (typically short)
+    // manifest destination being created, not traversed past its length.
+    let target = crate::paths::verbatim(target)?;
     // junction::create takes (target, junction) — target first.
-    junction::create(target, link)
+    junction::create(&target, link)
 }
 
 #[cfg(unix)]
