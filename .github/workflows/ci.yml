@@ -72,32 +72,6 @@ jobs:
           if ($actualFs -ne 'exFAT') { throw "expected exFAT, got $actualFs" }
           "SAFELINK_EXFAT_TEST_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # macOS: create a 64MB disk image formatted exFAT, attach it, export the
-      # mount point. hdiutil handles both create and format, and the volume
-      # appears under /Volumes.
-      - name: Set up exFAT test volume (macOS)
-        if: runner.os == 'macOS'
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          rm -f /tmp/safelink-exfat.dmg
-          hdiutil create -size 64m -fs exFAT -volname SAFELINK /tmp/safelink-exfat.dmg
-          # Attach and capture the device line to verify it attached
-          hdiutil attach /tmp/safelink-exfat.dmg >/dev/null
-          # Give the automounter a beat to surface the volume
-          sleep 2
-          if [ ! -d /Volumes/SAFELINK ]; then
-            echo "Volume did not appear under /Volumes/SAFELINK; skipping."
-            exit 0
-          fi
-          # Verify the filesystem is actually exFAT, not HFS+ or APFS
-          actual=$(diskutil info /Volumes/SAFELINK 2>/dev/null | grep 'File System Personality' | awk '{print $NF}')
-          if [ "$actual" != "ExFAT" ]; then
-            echo "Expected exFAT, got '$actual'; skipping."
-            exit 0
-          fi
-          echo "SAFELINK_EXFAT_TEST_DIR=/Volumes/SAFELINK" >> $GITHUB_ENV
-
       - name: Build
         run: cargo build --all-targets --verbose
 
