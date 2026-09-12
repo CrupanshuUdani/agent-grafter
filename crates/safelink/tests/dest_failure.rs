@@ -32,6 +32,17 @@
 //! evidence that it works there. This matches Global Constraint 6 and the
 //! loud skip marker in `lib.rs`: the project states which platforms a claim
 //! covers rather than letting a green check imply all of them.
+//!
+//! ROOT HONESTY: rows 5, 6 and 7 additionally self-skip when the process can
+//! write to a 0o555 directory, i.e. when running as root — DAC write checks
+//! are bypassed for UID 0, so the lock does not lock. A skipped run still
+//! reports as a PASS, and the banner explaining why goes to stderr, which
+//! `cargo test` captures. Before trusting these tests — in particular before
+//! using them to verify a sabotage — run:
+//!
+//!     cargo test --all-targets -- --nocapture
+//!
+//! and confirm the "SKIPPED ... running as root" banner is ABSENT.
 
 use safelink::capability::ForcedProbe;
 use safelink::materialize::{MaterializeOptions, materialize};
@@ -367,9 +378,16 @@ fn directory_link_refuses_an_unwritable_parent_and_names_the_destination() {
     );
 }
 
-/// Row 6. Same contract for the copy path, which fails inside `copy_atomic`
-/// at a different call (`fs::copy` into the sibling temp file) than row 5
+/// Row 6. Same contract for the copy path, which reaches the failure through
+/// `copy_atomic` rather than through `symlink`/`junction::create` as row 5
 /// does. Both must arrive at the same annotated error.
+///
+/// Exactly which call inside `copy_atomic` reports EACCES is deliberately not
+/// asserted: `create_dir_all` on the already-existing locked parent is
+/// expected to short-circuit on `is_dir()` and return `Ok`, leaving `fs::copy`
+/// into the sibling temp file to be the one that fails — but that is an
+/// unverified reading of std's internals, and the contract this test defends
+/// (kind plus a message naming the destination) holds either way.
 #[cfg(unix)]
 #[test]
 fn file_copy_refuses_an_unwritable_parent_and_names_the_destination() {
