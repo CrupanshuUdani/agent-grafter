@@ -21,9 +21,13 @@ jobs:
       # SAFELINK_EXFAT_TEST_DIR is absent, so a failure here does NOT fail the
       # build — it only means exFAT coverage is skipped on this runner.
       #
-      # Linux: a 64M image in a file, loopback-mounted via `mount -o loop`.
-      #         GitHub's Ubuntu runners have sudo and the exfatprogs package
-      #         is in the default apt repos.
+      # Two mount strategies are tried:
+      #   1. Kernel mount: `mount -o loop` — needs the `exfat` kernel module,
+      #      which is absent from GitHub's default Ubuntu image (the format step
+      #      succeeds but mount fails with "unknown filesystem type 'exfat'").
+      #   2. Userspace/FUSE mount: `mount.exfat-fuse` from exfatprogs — does not
+      #      need a kernel module, but needs /dev/fuse (not always exposed in
+      #      containers). Falls back gracefully.
       - name: Set up exFAT test volume (Linux)
         if: runner.os == 'Linux'
         continue-on-error: true
@@ -33,7 +37,25 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq exfatprogs
           sudo mkfs.exfat /tmp/exfat.img
           sudo mkdir -p /mnt/exfat
-          sudo mount -o loop,uid=$(id -u),gid=$(id -g) /tmp/exfat.img /mnt/exfat
+
+          # Strategy 1: kernel mount. Expected to fail on GH Ubuntu runners
+          # with "unknown filesystem type 'exfat'", which is fine.
+          if sudo mount -o loop,uid=$(id -u),gid=$(id -g) /tmp/exfat.img /mnt/exfat 2>/tmp/mount_err; then
+            echo "Kernel mount succeeded."
+          else
+            echo "Kernel mount unavailable ($(cat /tmp/mount_err | head -1)). Trying userspace/FUSE..."
+            # Strategy 2: exfat-fuse userspace mount.
+            # mount.exfat-fuse / exfatprogs' own mount helper invokes FUSE and
+            # does not require a kernel module, only /dev/fuse.
+            if command -v mount.exfat-fuse &>/dev/null; then
+              sudo mount.exfat-fuse /tmp/exfat.img /mnt/exfat -o uid=$(id -u),gid=$(id -g),umask=0022
+            elif command -v mount.exfat &>/dev/null; then
+              sudo mount.exfat /tmp/exfat.img /mnt/exfat -o uid=$(id -u),gid=$(id -g),umask=0022
+            else
+              echo "No userspace exFAT mount helper available; skipping exFAT coverage."
+              exit 0
+            fi
+          fi
           echo "SAFELINK_EXFAT_TEST_DIR=/mnt/exfat" >> $GITHUB_ENV
 
       - name: Build
