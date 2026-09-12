@@ -5,7 +5,7 @@
 //!   cargo run --example smoke -- file C:\path\to\src.md C:\path\to\dest.md
 
 use safelink::capability::RealProbe;
-use safelink::materialize::materialize;
+use safelink::materialize::{MaterializeOptions, materialize};
 use safelink::op::{Entry, LinkOp};
 use std::path::PathBuf;
 
@@ -36,7 +36,10 @@ fn main() -> std::io::Result<()> {
         RealProbe.can_create_file_symlink()
     });
 
-    let applied = materialize(&entry, &RealProbe)?;
+    // Defaults: the smoke test is a manual one-shot against paths the
+    // operator just typed, so auto-creating the destination's parents is the
+    // helpful behavior. Strictness is a manifest-runner concern.
+    let applied = materialize(&entry, &RealProbe, &MaterializeOptions::default())?;
     println!("declared: {:?}\napplied:  {:?}", entry.op, applied);
     if applied != entry.op {
         println!("(downgraded — this is the expected fallback, not an error)");

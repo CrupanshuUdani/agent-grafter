@@ -1,9 +1,54 @@
 use std::io;
+use std::path::Path;
 
 use crate::capability::SymlinkProbe;
 use crate::copy::copy_atomic;
 use crate::create::create_dir_link;
 use crate::op::{Entry, LinkOp};
+
+/// Caller-supplied policy for the destination side of a materialization.
+///
+/// This exists because the two destination-side failure modes need opposite
+/// treatments, and only one of them is a policy question:
+///
+///   - *Missing parent hierarchy* is a policy question. Auto-creating it is
+///     convenient for a fresh machine and reckless for a manifest whose
+///     destination root is expected to already exist — a typo in `dest` then
+///     silently builds a whole tree in the wrong place instead of reporting
+///     it. So it is a flag, and the caller decides.
+///   - *Permission denied* is not a policy question and is deliberately
+///     absent from this struct. See `annotate_dest_error`.
+///
+/// An interactive prompt is not an option here: `materialize` is a pure
+/// per-entry function with no terminal in its call path, run across a whole
+/// declarative manifest and possibly unattended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializeOptions {
+    /// Create the destination's missing parent directories before applying
+    /// the op. Applies identically to every `LinkOp`.
+    ///
+    /// When `false`, a missing parent is refused and named, and **nothing**
+    /// is created — not the parent, not the destination.
+    pub create_missing_parents: bool,
+}
+
+impl Default for MaterializeOptions {
+    /// `create_missing_parents: true`.
+    ///
+    /// Chosen to match what the code already did before this option existed,
+    /// so the default carries no behavior change: `copy_atomic` has always
+    /// called `create_dir_all` on the destination's parent unconditionally.
+    /// `DirectoryLink` did not, which made the same manifest shape succeed
+    /// for one op kind and fail for another — an accident of which function
+    /// happened to call `create_dir_all`, not a designed distinction. The
+    /// default resolves that split toward the existing majority behavior;
+    /// `false` is what a caller opts into.
+    fn default() -> Self {
+        Self {
+            create_missing_parents: true,
+        }
+    }
+}
 
 /// Materialize one entry, returning the operation **actually applied**.
 ///
@@ -11,7 +56,11 @@ use crate::op::{Entry, LinkOp};
 /// `FileSymlink -> FileCopy` when the probe reports symlinks are
 /// unavailable. Everything else is honored exactly as declared: the engine
 /// does not guess.
-pub fn materialize(entry: &Entry, probe: &dyn SymlinkProbe) -> io::Result<LinkOp> {
+pub fn materialize(
+    entry: &Entry,
+    probe: &dyn SymlinkProbe,
+    options: &MaterializeOptions,
+) -> io::Result<LinkOp> {
     // Checked before anything looks at, classifies, or touches the
     // destination. A missing source can never justify mutating the
     // destination, so there is no ordering in which inspecting `dest` first
@@ -44,25 +93,97 @@ pub fn materialize(entry: &Entry, probe: &dyn SymlinkProbe) -> io::Result<LinkOp
         ));
     }
 
-    match entry.op {
+    // Before the `match`, deliberately: this is the one place the parent
+    // policy is applied, so every op kind gets the identical decision from
+    // the identical code. Putting it inside the arms — or inside
+    // `copy_atomic` and `create_dir_link` — is how the two paths drifted
+    // apart in the first place.
+    prepare_dest_parent(&entry.dest, options)?;
+
+    let applied = match entry.op {
         LinkOp::DirectoryLink => {
-            create_dir_link(&entry.source, &entry.dest)?;
-            Ok(LinkOp::DirectoryLink)
+            create_dir_link(&entry.source, &entry.dest).map(|()| LinkOp::DirectoryLink)
         }
-        LinkOp::FileCopy => {
-            copy_atomic(&entry.source, &entry.dest)?;
-            Ok(LinkOp::FileCopy)
-        }
+        LinkOp::FileCopy => copy_atomic(&entry.source, &entry.dest).map(|()| LinkOp::FileCopy),
         LinkOp::FileSymlink => {
             if probe.can_create_file_symlink() {
-                symlink_file(&entry.source, &entry.dest)?;
-                Ok(LinkOp::FileSymlink)
+                symlink_file(&entry.source, &entry.dest).map(|()| LinkOp::FileSymlink)
             } else {
-                copy_atomic(&entry.source, &entry.dest)?;
-                Ok(LinkOp::FileCopy)
+                copy_atomic(&entry.source, &entry.dest).map(|()| LinkOp::FileCopy)
             }
         }
+    };
+
+    // `map_err`, never a fallback: an error stays an error. The result is
+    // still `Err` in every case it was `Err` before — only the message
+    // improves. See `directory_link_failure_propagates_as_an_error_not_a_
+    // silent_downgrade` for the property this must not break.
+    applied.map_err(|e| annotate_dest_error(&entry.dest, e))
+}
+
+/// Apply the missing-parent policy to `dest`, before anything touches it.
+///
+/// Returns `Ok(())` without creating anything when the parent already
+/// exists, which is the overwhelmingly common case.
+fn prepare_dest_parent(dest: &Path, options: &MaterializeOptions) -> io::Result<()> {
+    let Some(parent) = dest.parent() else {
+        // A root path, e.g. `/`. There is no parent to create; let the op
+        // itself fail on its own terms rather than inventing an error here.
+        return Ok(());
+    };
+    // `dest.parent()` yields `""` for a bare relative file name like
+    // `AGENTS.md`. That means the current directory, which exists by
+    // definition — `Path::new("").exists()` is `false`, so this case has to
+    // be excluded explicitly or a bare file name would be refused outright.
+    if parent.as_os_str().is_empty() || parent.exists() {
+        return Ok(());
     }
+
+    if !options.create_missing_parents {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "destination parent directory does not exist: {} -- refusing to \
+                 materialize {} because create_missing_parents is disabled. \
+                 Create the directory yourself and re-run, or enable \
+                 create_missing_parents; nothing was created.",
+                parent.display(),
+                dest.display()
+            ),
+        ));
+    }
+
+    std::fs::create_dir_all(parent).map_err(|e| annotate_dest_error(dest, e))
+}
+
+/// Name the destination in a permission failure; pass everything else
+/// through untouched.
+///
+/// Permission denied is never negotiable and is deliberately not covered by
+/// `MaterializeOptions`: a destination the user cannot write is a fact about
+/// the machine, and silently working around it (by relaxing modes, or by
+/// writing somewhere else) is exactly the kind of guess this engine does not
+/// make. The only thing worth improving is the diagnostic — the raw OS error
+/// on Linux is the bare string "Permission denied (os error 13)", which does
+/// not say *which* path, and a manifest run touches many. Task 10's
+/// missing-source error already names its path; this makes the destination
+/// side consistent with it.
+///
+/// The original error's `Display` is folded into the new message rather than
+/// discarded, so the OS errno survives for debugging.
+fn annotate_dest_error(dest: &Path, e: io::Error) -> io::Error {
+    if e.kind() != io::ErrorKind::PermissionDenied {
+        return e;
+    }
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "permission denied writing destination {}: {e} -- refusing to \
+             materialize. Fix the permissions on the destination or its parent \
+             directory and re-run; the destination was left untouched.",
+            dest.display()
+        ),
+    )
 }
 
 #[cfg(windows)]
@@ -94,7 +215,8 @@ mod tests {
             dest: dest.clone(),
             op: LinkOp::DirectoryLink,
         };
-        let applied = materialize(&entry, &ForcedProbe(true)).unwrap();
+        let applied =
+            materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default()).unwrap();
 
         assert_eq!(applied, LinkOp::DirectoryLink);
         assert_eq!(fs::read(dest.join("f.txt")).unwrap(), b"v");
@@ -113,7 +235,8 @@ mod tests {
             op: LinkOp::FileSymlink,
         };
         // ForcedProbe(false) reaches the fallback even on an elevated CI host.
-        let applied = materialize(&entry, &ForcedProbe(false)).unwrap();
+        let applied =
+            materialize(&entry, &ForcedProbe(false), &MaterializeOptions::default()).unwrap();
 
         assert_eq!(applied, LinkOp::FileCopy, "must downgrade, not fail");
         assert_eq!(fs::read(&dest).unwrap(), b"payload");
@@ -133,7 +256,8 @@ mod tests {
             dest: dest.clone(),
             op: LinkOp::FileSymlink,
         };
-        let applied = materialize(&entry, &ForcedProbe(true)).unwrap();
+        let applied =
+            materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default()).unwrap();
 
         assert_eq!(applied, LinkOp::FileSymlink);
         assert_eq!(fs::read(&dest).unwrap(), b"payload");
@@ -152,7 +276,7 @@ mod tests {
             op: LinkOp::FileCopy,
         };
         assert_eq!(
-            materialize(&entry, &ForcedProbe(true)).unwrap(),
+            materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default()).unwrap(),
             LinkOp::FileCopy
         );
         assert_eq!(fs::read(&dest).unwrap(), b"payload");
@@ -198,7 +322,7 @@ mod tests {
             op: LinkOp::DirectoryLink,
         };
 
-        let result = materialize(&entry, &ForcedProbe(true));
+        let result = materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default());
 
         assert!(
             result.is_err(),
