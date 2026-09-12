@@ -67,7 +67,26 @@ fn a_dangling_link_is_classified_and_removed_without_erroring_on_its_target() {
     assert_eq!(classify(&link).unwrap(), LinkClass::FileLink);
 
     // And it must be removable -- without erroring on the missing target.
-    remove_link(&link).unwrap();
+    // On Windows, remove_dir_all may not release the directory handle
+    // immediately, so the first remove_link attempt can hit "Access is
+    // denied". Retry a few times to handle this asynchronous handle release
+    // -- the link must eventually be removable.
+    let mut last_err = None;
+    for _ in 0..10 {
+        match remove_link(&link) {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        panic!("dangling link should be removable after retries, got: {e}");
+    }
     assert!(!link.exists(), "the link should be gone after remove_link");
 }
 
