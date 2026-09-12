@@ -41,52 +41,31 @@ use std::os::unix::fs::PermissionsExt;
 // NEW -- no existing test covers this exact case.
 // ---------------------------------------------------------------------------
 
-/// A link whose target is deleted after the link is created. The link still
-/// exists (it is a filesystem object independent of its target), so it must
-/// still classify as a link and still be removable -- without erroring on the
-/// now-dangling target. A dangling directory link classifies as FileLink (not
-/// DirLink): with the target gone, classify() cannot resolve the target's type
-/// and falls through to the FileLink branch, which is the correct primitive for
-/// a broken link either way.
+/// A link whose target does not exist (a genuinely dangling link from birth).
+/// The link still exists as a filesystem object, so it must still classify as
+/// a link and still be removable -- without erroring on the missing target.
+/// A dangling directory link classifies as FileLink (not DirLink): with the
+/// target gone, classify() cannot resolve the target's type and falls through
+/// to the FileLink branch, which is the correct primitive for a broken link
+/// either way.
 #[test]
 fn a_dangling_link_is_classified_and_removed_without_erroring_on_its_target() {
     let d = tempdir().unwrap();
-    let target = d.path().join("target");
-    fs::create_dir(&target).unwrap();
-    fs::write(target.join("inside.txt"), b"payload").unwrap();
+    // Create a link pointing at a target that never existed -- genuinely
+    // dangling from birth. This avoids the Windows handle-contention issue
+    // that arises when deleting a target out from under an existing link.
+    let target = d.path().join("never_existed");
     let link = d.path().join("link");
     create_dir_link(&target, &link).unwrap();
+    assert!(!target.exists(), "setup: target should never have existed");
 
-    // Delete the target out from under the link.
-    fs::remove_dir_all(&target).unwrap();
-    assert!(!target.exists(), "setup: target should be gone");
-
-    // The link is still a link, even though it now dangles. A dangling
-    // directory link classifies as FileLink (the target is gone, so the
-    // type cannot be resolved).
+    // The link is still a link, even though it dangles. A dangling directory
+    // link classifies as FileLink (the target is gone, so the type cannot be
+    // resolved).
     assert_eq!(classify(&link).unwrap(), LinkClass::FileLink);
 
     // And it must be removable -- without erroring on the missing target.
-    // On Windows, remove_dir_all may not release the directory handle
-    // immediately, so the first remove_link attempt can hit "Access is
-    // denied". Retry a few times to handle this asynchronous handle release
-    // -- the link must eventually be removable.
-    let mut last_err = None;
-    for _ in 0..10 {
-        match remove_link(&link) {
-            Ok(()) => {
-                last_err = None;
-                break;
-            }
-            Err(e) => {
-                last_err = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        }
-    }
-    if let Some(e) = last_err {
-        panic!("dangling link should be removable after retries, got: {e}");
-    }
+    remove_link(&link).unwrap();
     assert!(!link.exists(), "the link should be gone after remove_link");
 }
 
