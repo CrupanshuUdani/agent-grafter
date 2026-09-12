@@ -21,13 +21,9 @@ jobs:
       # SAFELINK_EXFAT_TEST_DIR is absent, so a failure here does NOT fail the
       # build — it only means exFAT coverage is skipped on this runner.
       #
-      # Two mount strategies are tried:
-      #   1. Kernel mount: `mount -o loop` — needs the `exfat` kernel module,
-      #      which is absent from GitHub's default Ubuntu image (the format step
-      #      succeeds but mount fails with "unknown filesystem type 'exfat'").
-      #   2. Userspace/FUSE mount: `mount.exfat-fuse` from exfatprogs — does not
-      #      need a kernel module, but needs /dev/fuse (not always exposed in
-      #      containers). Falls back gracefully.
+      # Each platform has a different path, and all of them are uncertain —
+      # these are probes, not guarantees. continue-on-error keeps the build
+      # green if the setup doesn't work.
       - name: Set up exFAT test volume (Linux)
         if: runner.os == 'Linux'
         continue-on-error: true
@@ -37,26 +33,70 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq exfatprogs
           sudo mkfs.exfat /tmp/exfat.img
           sudo mkdir -p /mnt/exfat
-
-          # Strategy 1: kernel mount. Expected to fail on GH Ubuntu runners
-          # with "unknown filesystem type 'exfat'", which is fine.
           if sudo mount -o loop,uid=$(id -u),gid=$(id -g) /tmp/exfat.img /mnt/exfat 2>/tmp/mount_err; then
             echo "Kernel mount succeeded."
+          elif command -v mount.exfat-fuse &>/dev/null; then
+            sudo mount.exfat-fuse /tmp/exfat.img /mnt/exfat -o uid=$(id -u),gid=$(id -g),umask=0022
           else
-            echo "Kernel mount unavailable ($(cat /tmp/mount_err | head -1)). Trying userspace/FUSE..."
-            # Strategy 2: exfat-fuse userspace mount.
-            # mount.exfat-fuse / exfatprogs' own mount helper invokes FUSE and
-            # does not require a kernel module, only /dev/fuse.
-            if command -v mount.exfat-fuse &>/dev/null; then
-              sudo mount.exfat-fuse /tmp/exfat.img /mnt/exfat -o uid=$(id -u),gid=$(id -g),umask=0022
-            elif command -v mount.exfat &>/dev/null; then
-              sudo mount.exfat /tmp/exfat.img /mnt/exfat -o uid=$(id -u),gid=$(id -g),umask=0022
-            else
-              echo "No userspace exFAT mount helper available; skipping exFAT coverage."
-              exit 0
-            fi
+            echo "No kernel module and no FUSE helper available; skipping exFAT coverage on Linux."
+            exit 0
           fi
           echo "SAFELINK_EXFAT_TEST_DIR=/mnt/exfat" >> $GITHUB_ENV
+
+      # Windows: create a 64MB dynamic VHDX, mount it, format exFAT, export
+      # the drive letter. New-VHD/Mount-VHD require the Hyper-V module, which
+      # is typically present on GitHub's Windows runners (they are Hyper-V
+      # VMs) but not guaranteed. Falls back gracefully.
+      - name: Set up exFAT test volume (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vhd = 'C:\safelink-exfat.vhdx'
+          $size = 64MB
+
+          # Create a dynamic VHDX. If New-VHD is missing (no Hyper-V module),
+          # this fails and we skip.
+          New-VHD -Path $vhd -SizeBytes $size -Dynamic
+          $vhdInfo = Mount-VHD -Path $vhd -PassThru
+          $disk = $vhdInfo | Get-Disk
+          $disk | Initialize-Disk -PartitionStyle MBR -Confirm:$false
+          $partition = $disk | New-Partition -UseMaximumSize -AssignDriveLetter
+          $vol = $partition | Format-Volume -FileSystem exFAT -NewFileSystemLabel SAFELINK -Confirm:$false
+          $letter = ($vol | Get-Volume).DriveLetter
+          if (-not $letter) { throw 'no drive letter assigned' }
+          $dir = "${letter}:\"
+          # Verify it really is exFAT before declaring success.
+          $actualFs = (Get-Volume -DriveLetter $letter).FileSystemType
+          if ($actualFs -ne 'exFAT') { throw "expected exFAT, got $actualFs" }
+          "SAFELINK_EXFAT_TEST_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # macOS: create a 64MB disk image formatted exFAT, attach it, export the
+      # mount point. hdiutil handles both create and format, and the volume
+      # appears under /Volumes.
+      - name: Set up exFAT test volume (macOS)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          rm -f /tmp/safelink-exfat.dmg
+          hdiutil create -size 64m -fs exFAT -volname SAFELINK /tmp/safelink-exfat.dmg
+          # Attach and capture the device line to verify it attached
+          hdiutil attach /tmp/safelink-exfat.dmg >/dev/null
+          # Give the automounter a beat to surface the volume
+          sleep 2
+          if [ ! -d /Volumes/SAFELINK ]; then
+            echo "Volume did not appear under /Volumes/SAFELINK; skipping."
+            exit 0
+          fi
+          # Verify the filesystem is actually exFAT, not HFS+ or APFS
+          actual=$(diskutil info /Volumes/SAFELINK 2>/dev/null | grep 'File System Personality' | awk '{print $NF}')
+          if [ "$actual" != "ExFAT" ]; then
+            echo "Expected exFAT, got '$actual'; skipping."
+            exit 0
+          fi
+          echo "SAFELINK_EXFAT_TEST_DIR=/Volumes/SAFELINK" >> $GITHUB_ENV
 
       - name: Build
         run: cargo build --all-targets --verbose
