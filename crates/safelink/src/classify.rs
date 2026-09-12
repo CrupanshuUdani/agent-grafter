@@ -1,6 +1,8 @@
 use std::io;
 use std::path::Path;
 
+use crate::paths::normalize_for_classification;
+
 /// What a path is, for the purposes of safe removal.
 ///
 /// Every link variant is a **traversal leaf** and a security boundary:
@@ -17,6 +19,7 @@ pub enum LinkClass {
 
 #[cfg(windows)]
 pub fn classify(path: &Path) -> io::Result<LinkClass> {
+    let path = &normalize_for_classification(path);
     // Order matters. Check the junction first: a junction's mode bits are
     // not a reliable discriminator, so `is_symlink()` must never be the
     // first question asked on Windows. See Global Constraint 5.
@@ -58,6 +61,11 @@ pub fn classify(path: &Path) -> io::Result<LinkClass> {
 
 #[cfg(unix)]
 pub fn classify(path: &Path) -> io::Result<LinkClass> {
+    // A trailing separator makes POSIX `lstat` dereference a directory
+    // symlink and report the target, not the link -- normalize before the
+    // OS ever sees it rather than document this as a caller obligation.
+    // See Task 11 and `paths::normalize_for_classification`.
+    let path = &normalize_for_classification(path);
     let md = std::fs::symlink_metadata(path)?;
     if !md.file_type().is_symlink() {
         return Ok(LinkClass::NotALink);
