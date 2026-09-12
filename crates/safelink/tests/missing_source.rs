@@ -18,7 +18,7 @@
 use safelink::capability::ForcedProbe;
 use safelink::classify::{LinkClass, classify};
 use safelink::create::create_dir_link;
-use safelink::materialize::materialize;
+use safelink::materialize::{MaterializeOptions, materialize};
 use safelink::op::{Entry, LinkOp};
 use std::fs;
 use std::io::ErrorKind;
@@ -44,7 +44,7 @@ fn refuses_to_create_a_link_to_a_missing_source() {
         dest: dest.clone(),
         op: LinkOp::DirectoryLink,
     };
-    let err = materialize(&entry, &ForcedProbe(true))
+    let err = materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default())
         .expect_err("a missing source must never materialize anything");
 
     assert_eq!(err.kind(), ErrorKind::NotFound);
@@ -76,7 +76,8 @@ fn leaves_an_existing_real_directory_untouched_when_the_source_is_missing() {
         dest: dest.clone(),
         op: LinkOp::DirectoryLink,
     };
-    let err = materialize(&entry, &ForcedProbe(true)).expect_err("must refuse");
+    let err = materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default())
+        .expect_err("must refuse");
 
     assert_eq!(err.kind(), ErrorKind::NotFound);
     assert!(
@@ -146,7 +147,7 @@ fn leaves_a_stale_link_to_the_missing_source_untouched() {
         dest: dest.clone(),
         op: LinkOp::DirectoryLink,
     };
-    let err = materialize(&entry, &ForcedProbe(true))
+    let err = materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default())
         .expect_err("a stale link must be reported, not silently re-created");
     assert_eq!(err.kind(), ErrorKind::NotFound);
     assert!(err.to_string().contains(&source.display().to_string()));
@@ -194,7 +195,7 @@ fn an_empty_source_directory_is_legitimate_and_proceeds() {
         dest: dest.clone(),
         op: LinkOp::DirectoryLink,
     };
-    let applied = materialize(&entry, &ForcedProbe(true))
+    let applied = materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default())
         .expect("an empty source is legitimate, not a missing one");
 
     assert_eq!(applied, LinkOp::DirectoryLink);
@@ -215,7 +216,8 @@ fn an_empty_source_file_is_legitimate_and_proceeds() {
         dest: dest.clone(),
         op: LinkOp::FileCopy,
     };
-    let applied = materialize(&entry, &ForcedProbe(true)).expect("an empty file is legitimate");
+    let applied = materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default())
+        .expect("an empty file is legitimate");
 
     assert_eq!(applied, LinkOp::FileCopy);
     assert_eq!(fs::read(&dest).unwrap(), b"");
