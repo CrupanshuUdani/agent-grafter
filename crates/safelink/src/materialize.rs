@@ -12,6 +12,38 @@ use crate::op::{Entry, LinkOp};
 /// unavailable. Everything else is honored exactly as declared: the engine
 /// does not guess.
 pub fn materialize(entry: &Entry, probe: &dyn SymlinkProbe) -> io::Result<LinkOp> {
+    // Checked before anything looks at, classifies, or touches the
+    // destination. A missing source can never justify mutating the
+    // destination, so there is no ordering in which inspecting `dest` first
+    // would be correct.
+    //
+    // The canonical source routinely lives on a removable or shared volume,
+    // so absence is the common case, not an exotic one. Bailing out here
+    // covers all three destination states at once, each for its own reason:
+    //
+    //   - dest absent:      refuse rather than leave a dangling link behind.
+    //   - dest is a link:   a stale link, not a broken one. The volume may
+    //                       come back; removing it destroys a working
+    //                       configuration for no benefit.
+    //   - dest is real data: never touch real data on the strength of a
+    //                       source that merely is not mounted right now.
+    //
+    // `exists()` is the right predicate here despite following symlinks: the
+    // question is whether the source resolves to real content, and a source
+    // that is itself a dangling link resolves to nothing. Emptiness is NOT
+    // part of the question — an empty source is legitimate and proceeds.
+    if !entry.source.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "source does not exist: {} -- refusing to materialize. If this \
+                 is a removable volume, mount it and re-run; the existing \
+                 destination was left untouched.",
+                entry.source.display()
+            ),
+        ));
+    }
+
     match entry.op {
         LinkOp::DirectoryLink => {
             create_dir_link(&entry.source, &entry.dest)?;
