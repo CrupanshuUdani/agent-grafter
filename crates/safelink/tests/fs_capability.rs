@@ -29,11 +29,15 @@ use safelink::op::{Entry, LinkOp};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// A directory on a filesystem that genuinely cannot hold symlinks, or `None`.
+/// A directory on a filesystem that genuinely cannot hold a link, or `None`.
 ///
-/// Verifies the premise rather than trusting the env var: if the configured
-/// path *can* hold a symlink it is not a link-less filesystem, and using it
-/// would silently turn these tests into no-ops that still report success.
+/// Uses the crate's own `RealProbe` to judge this, not a raw `symlink`
+/// syscall — the probe is what `materialize` actually consults, so it is the
+/// contract that matters. A dangling-link syscall would misclassify macOS
+/// exFAT as link-less (macOS creates links there via a proprietary "Xsym"
+/// workaround, so `RealProbe` says `true`), and would then assert a downgrade
+/// that does not happen. Keeping the premise and the contract the same
+/// object means they cannot diverge.
 fn linkless_fs_dir() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var("SAFELINK_EXFAT_TEST_DIR").ok()?);
     if !dir.is_dir() {
@@ -43,22 +47,14 @@ fn linkless_fs_dir() -> Option<PathBuf> {
         );
         return None;
     }
-
-    // Probe directly, not via the crate -- the crate is what is under test.
-    let canary = dir.join(".linkless_canary");
-    let _ = fs::remove_file(&canary);
-    #[cfg(unix)]
-    let can_link = std::os::unix::fs::symlink("target", &canary).is_ok();
-    #[cfg(windows)]
-    let can_link = std::os::windows::fs::symlink_file("target", &canary).is_ok();
-    if can_link {
-        let _ = fs::remove_file(&canary);
+    let dest = dir.join("t13_probe_dest.txt");
+    if RealProbe.can_create_file_symlink(&dest) {
         eprintln!(
             "\n\
              ======================================================================\n\
-             SKIPPED: {} CAN hold symlinks, so it is not a link-less\n\
-             filesystem and cannot exercise the exFAT path. A pass here would\n\
-             be meaningless. Point SAFELINK_EXFAT_TEST_DIR at real exFAT.\n\
+             {} CAN hold a link, so it is not a link-less filesystem and\n\
+             cannot exercise this path. A pass here would be meaningless.\n\
+             Point SAFELINK_EXFAT_TEST_DIR at real exFAT on Linux/Windows.\n\
              ======================================================================\n",
             dir.display()
         );

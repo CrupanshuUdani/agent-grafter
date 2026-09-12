@@ -242,20 +242,13 @@ fn annotate_dest_error(dest: &Path, e: io::Error) -> io::Error {
 /// link *at that location*, for the same reason `RealProbe` takes a path —
 /// filesystem names are not a capability contract.
 fn annotate_dir_link_error(dest: &Path, probe: &dyn SymlinkProbe, e: io::Error) -> io::Error {
-    // Only reinterpret the ambiguous case. A NotFound, AlreadyExists, etc.
-    // means what it says.
-    if e.kind() != io::ErrorKind::PermissionDenied {
-        return e;
-    }
-    // Distinguish two failures that share the same errno:
-    //   * the filesystem has no link mechanism (exFAT/FAT32/UDF) -- EPERM
-    //   * the directory is not writable by this user           -- EPERM/EACCES
-    //
-    // Asking the probe about `dest` alone cannot separate them: if the parent
-    // is unwritable the probe fails for that reason and would wrongly blame
-    // the filesystem. So ask the nearest ancestor this user CAN write. If a
-    // link is creatable there, the filesystem clearly supports links and the
-    // real problem is permissions on the destination.
+    // The probe already determined the filesystem cannot hold a link. When
+    // it can't, the OS error is an unreliable signal about *why*: on Linux
+    // exFAT it is EPERM, on Windows exFAT it is ERROR_INVALID_FUNCTION
+    // (ErrorKind::Uncategorized), and other platforms may use other codes.
+    // The probe's verdict is the ground truth, so a creatable link anywhere
+    // on this mount means the real problem is permissions on `dest`; anything
+    // else means the filesystem refuses and no change of mode will help.
     if writable_ancestor_supports_links(dest, probe) {
         return annotate_dest_error(dest, e);
     }
