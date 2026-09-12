@@ -17,37 +17,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      # Opt-in exFAT test volume. The fs_capability tests skip loudly when
-      # SAFELINK_EXFAT_TEST_DIR is absent, so a failure here does NOT fail the
-      # build — it only means exFAT coverage is skipped on this runner.
+      # Opt-in exFAT test volume — Windows only. The fs_capability tests skip
+      # loudly when SAFELINK_EXFAT_TEST_DIR is absent, so a failure here does
+      # NOT fail the build — it only means exFAT coverage is skipped.
       #
-      # Each platform has a different path, and all of them are uncertain —
-      # these are probes, not guarantees. continue-on-error keeps the build
-      # green if the setup doesn't work.
-      - name: Set up exFAT test volume (Linux)
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          truncate -s 64M /tmp/exfat.img
-          sudo apt-get update -qq && sudo apt-get install -y -qq exfatprogs
-          sudo mkfs.exfat /tmp/exfat.img
-          sudo mkdir -p /mnt/exfat
-          if sudo mount -o loop,uid=$(id -u),gid=$(id -g) /tmp/exfat.img /mnt/exfat 2>/tmp/mount_err; then
-            echo "Kernel mount succeeded."
-          elif command -v mount.exfat-fuse &>/dev/null; then
-            sudo mount.exfat-fuse /tmp/exfat.img /mnt/exfat -o uid=$(id -u),gid=$(id -g),umask=0022
-          else
-            echo "No kernel module and no FUSE helper available; skipping exFAT coverage on Linux."
-            exit 0
-          fi
-          echo "SAFELINK_EXFAT_TEST_DIR=/mnt/exfat" >> $GITHUB_ENV
-
-      # Windows: create a 64MB dynamic VHDX, mount it, format exFAT, export
-      # the drive letter. New-VHD/Mount-VHD require the Hyper-V module, which
-      # is typically present on GitHub's Windows runners (they are Hyper-V
-      # VMs) but not guaranteed. Falls back gracefully.
-      - name: Set up exFAT test volume (Windows)
+      # Creates a 64MB dynamic VHDX, mounts it, formats exFAT, exports the
+      # drive letter. New-VHD/Mount-VHD require the Hyper-V module, which is
+      # present on GitHub's Windows runners (they are Hyper-V VMs) but not
+      # guaranteed. continue-on-error keeps the build green if setup fails.
+      - name: Set up exFAT test volume
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
@@ -56,8 +34,6 @@ jobs:
           $vhd = 'C:\safelink-exfat.vhdx'
           $size = 64MB
 
-          # Create a dynamic VHDX. If New-VHD is missing (no Hyper-V module),
-          # this fails and we skip.
           New-VHD -Path $vhd -SizeBytes $size -Dynamic
           $vhdInfo = Mount-VHD -Path $vhd -PassThru
           $disk = $vhdInfo | Get-Disk
@@ -67,7 +43,6 @@ jobs:
           $letter = ($vol | Get-Volume).DriveLetter
           if (-not $letter) { throw 'no drive letter assigned' }
           $dir = "${letter}:\"
-          # Verify it really is exFAT before declaring success.
           $actualFs = (Get-Volume -DriveLetter $letter).FileSystemType
           if ($actualFs -ne 'exFAT') { throw "expected exFAT, got $actualFs" }
           "SAFELINK_EXFAT_TEST_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
