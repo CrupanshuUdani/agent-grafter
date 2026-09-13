@@ -1113,6 +1113,142 @@ fn dry_run_reports_the_retention_sweep_without_removing_anything() {
     );
 }
 
+#[test]
+fn a_linked_intermediate_component_of_a_declared_path_is_never_walked_through() {
+    // Every other fixture in this file declares a single-segment entry, which
+    // is exactly why this went unnoticed: with one component there is only one
+    // path to classify, and classifying the joined result is the same thing.
+    // With two, it is not. `dest.join("agents/modes")` is resolved by the
+    // kernel *through* `dest/agents` before `classify` ever sees the final
+    // path, so classifying only the end of the path reports `NotALink` about
+    // an object that can live entirely outside the target root.
+    let env = Env::new();
+    env.write_source("agents/modes/declared.md", b"declared");
+    let manifest = env.write_manifest("copy = [\"agents/modes\"]");
+
+    // Somewhere else entirely — standing in for whatever a stale link points
+    // at after the user moved their source tree.
+    let outside = env.root().join("outside");
+    fs::create_dir_all(outside.join("modes")).unwrap();
+    fs::write(outside.join("modes/stray.md"), b"not ours to delete").unwrap();
+    fs::write(outside.join("unrelated.md"), b"also not ours").unwrap();
+
+    // A link at the *intermediate* component, not at the scope root.
+    safelink::create::create_dir_link(&outside, &env.dest().join("agents")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert_eq!(
+        fs::read(outside.join("modes/stray.md")).unwrap(),
+        b"not ours to delete",
+        "a file outside the target root must never be pruned — reached here \
+         only by resolving through a linked intermediate path component: {text}"
+    );
+    assert_eq!(
+        fs::read(outside.join("unrelated.md")).unwrap(),
+        b"also not ours"
+    );
+    assert!(
+        !text.contains("pruned: ") && !text.contains("would prune: "),
+        "nothing may be planned for removal once the path escapes: {text}"
+    );
+    assert!(
+        text.contains("prune skipped"),
+        "and the refusal must be reported, not silent: {text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_path_that_cannot_be_read_is_not_treated_as_deleted() {
+    // "Absent from the source" was decided by `symlink_metadata(...).is_ok()`,
+    // which reads *every* error as "gone" — including permission denied. An
+    // unreadable source must never become a deletion.
+    //
+    // Reached without any race: `collect_files` records a directory symlink in
+    // the source as a traversal leaf without descending, so the source walk
+    // succeeds while the per-file stat underneath it does not.
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    env.write_source("modes/sub/keep.md", b"materialized earlier");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    assert_eq!(
+        fs::read(env.dest().join("modes/sub/keep.md")).unwrap(),
+        b"materialized earlier",
+        "setup: the file must be materialized before the source becomes unreadable"
+    );
+
+    // Replace the real source subdirectory with a link to one the process
+    // cannot traverse.
+    let locked = env.root().join("locked");
+    fs::create_dir(&locked).unwrap();
+    env.remove_source("modes/sub/keep.md");
+    fs::remove_dir(env.source().join("modes/sub")).unwrap();
+    safelink::create::create_dir_link(&locked, &env.source().join("modes/sub")).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    if fs::read(env.source().join("modes/sub/keep.md")).is_err()
+        && fs::metadata(&locked).is_ok_and(|m| m.permissions().mode() & 0o777 == 0)
+        && std::fs::symlink_metadata(env.source().join("modes/sub/keep.md"))
+            .err()
+            .map(|e| e.kind())
+            != Some(std::io::ErrorKind::PermissionDenied)
+    {
+        // Privileges ignore the mode bits (root in a container). The case
+        // cannot be produced here; asserting would test the runner.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        fs::read(env.dest().join("modes/sub/keep.md")).unwrap(),
+        b"materialized earlier",
+        "an unreadable source path must not be read as a deleted one: {text}"
+    );
+    assert!(
+        !text.contains("pruned: modes/sub/keep.md"),
+        "and it must not even be planned for removal: {text}"
+    );
+    assert!(
+        text.contains("prune skipped"),
+        "the undecidable path must be reported, not silently skipped: {text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_directory_replaced_by_a_plain_file_still_prunes_what_it_held() {
+    // The case the fix above must not regress: the source now has a plain
+    // *file* where a directory used to be, so stat'ing a path *under* it fails
+    // with "not a directory". That is genuinely gone, not undecidable.
+    let env = Env::new();
+    env.write_source("modes/sub/old.md", b"materialized earlier");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    assert!(env.dest().join("modes/sub/old.md").exists(), "setup");
+
+    env.remove_source("modes/sub/old.md");
+    fs::remove_dir(env.source().join("modes/sub")).unwrap();
+    fs::write(env.source().join("modes/sub"), b"now a file").unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        out.text().contains("pruned: modes/sub/old.md"),
+        "a path whose source parent is now a plain file is genuinely gone: {}",
+        out.text()
+    );
+    assert!(!env.dest().join("modes/sub/old.md").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn a_destination_subtree_that_cannot_be_read_prunes_nothing_and_says_so() {

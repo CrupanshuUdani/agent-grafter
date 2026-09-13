@@ -713,8 +713,8 @@ fn plan_copy_entry(
 /// What makes that structural rather than aspirational:
 ///
 ///   1. This is the only function that turns a target root into a walkable
-///      path, and every path it returns is `ctx.dest.join(declared_dir)` — a
-///      strict subdirectory of the target root, named by the manifest.
+///      path, and it builds that path **one component at a time from
+///      `ctx.dest`**, checking every level on the way down (see below).
 ///   2. It is called from exactly one place: [`plan_prunes`], which is called
 ///      from exactly one place: the directory branch of [`plan_copy_entry`].
 ///      `link` entries and file `copy` entries therefore have no route here at
@@ -723,41 +723,112 @@ fn plan_copy_entry(
 ///      and a relative prefix, so there is no expression anywhere in the prune
 ///      path that could name a sibling of the declared directory.
 ///
-/// Three conditions have to hold, and any of them failing yields no scope and
-/// therefore no prune candidates at all:
+/// **Why the descent is component-by-component, and not one `join` plus one
+/// `classify`.** That is what this function used to do, and it was wrong for
+/// any declared entry naming more than one segment. `ctx.dest.join("agents/modes")`
+/// is resolved by the kernel *through* `dest/agents` before `classify` ever
+/// sees the end of the path, so if `dest/agents` is a link, `classify` happily
+/// reports `NotALink` — about an object that may live nowhere near the target
+/// root. Prune would then enumerate and delete inside a completely unrelated
+/// directory. Classifying the joined result answers a question about the
+/// destination of the path, not about the path; only walking it level by level
+/// answers "does getting here pass through anything I must not cross".
 ///
-///   - **Ruling C.** No component of the declared name may be the backup
-///     directory. Backups live at `target.dest/.agrafter-backups`, not nested
-///     inside a declared subdirectory, so a collision needs a manifest
-///     pathological enough to declare that name itself — which nothing stops
-///     it from doing. Hard-coded rather than argued to be impossible.
-///   - **The scope root must not be a link.** A stale `DirLink` left at
-///     `dest/modes` by an earlier `link = ["modes"]` declaration that has since
-///     become `copy = ["modes"]` would otherwise be walked *through*, which is
-///     Ruling A's failure mode arriving by a different door.
-///   - **The scope root must be a real directory.** Nothing to reconcile
-///     otherwise.
-fn prune_scope(ctx: &TargetContext<'_>, declared_dir: &str) -> Option<PathBuf> {
-    if names_the_backup_dir(Path::new(declared_dir)) {
-        return None;
+/// So every level from `ctx.dest` down is classified in turn, and any of the
+/// following yields no scope, and therefore no prune candidates at all:
+///
+///   - **A link at any level, intermediate or final.** Including the stale
+///     `DirLink` left at `dest/modes` by an earlier `link = ["modes"]`
+///     declaration that has since become `copy = ["modes"]` — Ruling A's
+///     failure mode arriving by a different door. Reported, not silent.
+///   - **Ruling C.** A component named as the backup directory. Backups live
+///     at `target.dest/.agrafter-backups`, not nested inside a declared
+///     subdirectory, so a collision needs a manifest pathological enough to
+///     declare that name itself — which nothing stops it from doing.
+///     Hard-coded rather than argued to be impossible.
+///   - **Any component that is not a plain name** — `..`, an absolute root, a
+///     Windows prefix. `manifest::validate_entry` checks only an entry's *net*
+///     depth, so `"a/b/../../c"` is accepted today; refusing the component
+///     outright here means no `..` ever takes part in building a path this code
+///     is about to delete inside, whatever the manifest layer does or does not
+///     catch.
+///   - **No plain components at all.** A belt against ever returning
+///     `ctx.dest` itself, which is the one path this whole function exists to
+///     keep prune away from.
+///   - **A level that cannot be inspected**, or a final path that is not a real
+///     directory.
+fn prune_scope(ctx: &TargetContext<'_>, declared_dir: &str) -> Scope {
+    let mut current = ctx.dest.to_path_buf();
+    let mut depth = 0usize;
+
+    for component in Path::new(declared_dir).components() {
+        let name = match component {
+            Component::Normal(name) => name,
+            // `Components` keeps a leading `.`; it names the same directory,
+            // so it neither descends nor needs checking.
+            Component::CurDir => continue,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Scope::Blocked(format!(
+                    "the declared entry {declared_dir:?} contains a path \
+                     component that is not a plain name, so where it lands \
+                     cannot be established without resolving the filesystem; \
+                     nothing was removed. Spell it as a plain relative path."
+                ));
+            }
+        };
+        if name == BACKUP_DIR {
+            return Scope::Nothing;
+        }
+        current.push(name);
+
+        // classify() before any metadata question, at *every* level: `is_dir()`
+        // and `is_symlink()` can both be true at once, so `is_dir()` alone is
+        // not an answer to "is it safe to descend here" (Spike S1).
+        match classify(&current) {
+            Ok(LinkClass::NotALink) => {}
+            Ok(LinkClass::DirLink | LinkClass::FileLink) => {
+                return Scope::Blocked(format!(
+                    "{} is a link, so reaching the declared entry \
+                     {declared_dir:?} would mean resolving through it and \
+                     possibly outside {}; nothing was removed.",
+                    current.display(),
+                    ctx.dest.display()
+                ));
+            }
+            // Nothing materialized here yet. Not a problem, and not worth a
+            // line: there is simply no destination subtree to reconcile.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Scope::Nothing,
+            Err(e) => {
+                return Scope::Blocked(format!(
+                    "could not inspect {} while locating the declared entry \
+                     {declared_dir:?}: {e}; nothing was removed.",
+                    current.display()
+                ));
+            }
+        }
+        depth += 1;
     }
-    let root = ctx.dest.join(declared_dir);
-    // classify() before any metadata question: `is_dir()` and `is_symlink()`
-    // can both be true at once, so `is_dir()` alone is not an answer to
-    // "is it safe to walk into this" (Spike S1).
-    if !matches!(classify(&root), Ok(LinkClass::NotALink)) {
-        return None;
+
+    if depth == 0 {
+        // `""`, `"."` — `manifest::validate_entry` already refuses these, and
+        // this is the backstop, because the failure it prevents is prune
+        // enumerating the target root itself.
+        return Scope::Nothing;
     }
-    if !std::fs::symlink_metadata(&root).is_ok_and(|m| m.is_dir()) {
-        return None;
+    if !std::fs::symlink_metadata(&current).is_ok_and(|m| m.is_dir()) {
+        return Scope::Nothing;
     }
-    Some(root)
+    Scope::Walk(current)
 }
 
-/// Whether any component of `path` is this tool's backup directory (Ruling C).
-fn names_the_backup_dir(path: &Path) -> bool {
-    path.components()
-        .any(|c| matches!(c, Component::Normal(name) if name == BACKUP_DIR))
+/// What [`prune_scope`] concluded about one declared entry.
+enum Scope {
+    /// Safe to enumerate: a real directory reached without crossing a link.
+    Walk(PathBuf),
+    /// Nothing to reconcile, and nothing worth a report line.
+    Nothing,
+    /// Refused. The string is the user-facing explanation, printed verbatim.
+    Blocked(String),
 }
 
 /// What the destination-subtree walk found at one relative path.
@@ -799,8 +870,16 @@ fn plan_prunes(
     if !source_dir.is_dir() {
         return;
     }
-    let Some(scope) = prune_scope(ctx, declared_dir) else {
-        return;
+    let scope = match prune_scope(ctx, declared_dir) {
+        Scope::Walk(scope) => scope,
+        Scope::Nothing => return,
+        Scope::Blocked(reason) => {
+            notes.push(PlanNote {
+                target: Some(ctx.name.to_string()),
+                message: format!("prune skipped for {declared_dir:?}: {reason}"),
+            });
+            return;
+        }
     };
 
     let mut found = Vec::new();
@@ -829,8 +908,27 @@ fn plan_prunes(
         // source still has at this relative path is not stale either, and
         // asking the filesystem directly is the answer that cannot drift from
         // how the list was assembled.
-        if std::fs::symlink_metadata(source_dir.join(&rel)).is_ok() {
-            continue;
+        //
+        // The error *kind* is load-bearing, and reading it as a bare `is_ok()`
+        // was a bug: that turns "I could not find out" into "it is gone", and
+        // from there into a deletion. Only two kinds actually mean absent.
+        // Everything else is undecidable, and an undecidable source is never a
+        // reason to remove something — the same asymmetry the scope root is
+        // already governed by, applied per path.
+        match std::fs::symlink_metadata(source_dir.join(&rel)) {
+            Ok(_) => continue,
+            Err(e) if is_genuinely_absent(&e) => {}
+            Err(e) => {
+                notes.push(PlanNote {
+                    target: Some(ctx.name.to_string()),
+                    message: format!(
+                        "prune skipped for {}: could not tell whether the \
+                         source still has it: {e}. It was left in place.",
+                        Path::new(declared_dir).join(&rel).display()
+                    ),
+                });
+                continue;
+            }
         }
 
         let dest = scope.join(&rel);
@@ -1079,6 +1177,26 @@ fn decide_over_real_data(entry: &Entry, probe: &dyn SymlinkProbe) -> Decision {
             entry.dest.display()
         )),
     }
+}
+
+/// Whether a failure to stat a source path means it is genuinely not there.
+///
+/// Two kinds do, and only two:
+///
+///   - `NotFound` — the obvious one.
+///   - `NotADirectory` — a path component that used to be a directory is now a
+///     plain file, so everything that was under it is gone just as surely.
+///     Treating this as undecidable would leave a whole stale subtree behind
+///     forever on a perfectly ordinary source edit.
+///
+/// Every other kind — permission denied, an I/O error, a link that cannot be
+/// traversed — means the question was not answered, and an unanswered question
+/// is never grounds for a deletion.
+fn is_genuinely_absent(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
 }
 
 /// Whether the destination already satisfies the entry (Ruling 4).
