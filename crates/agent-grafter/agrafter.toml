@@ -14,7 +14,7 @@ source = "."
 # agent must keep working without it.
 copy = [
     "AGENTS.md",
-    "CLAUDE.md",
+    "assistant.md",
     "modes/",
     "skills/",
 ]
@@ -24,8 +24,11 @@ link = [
     "memory/",
 ]
 
-[targets.claude]
-dest = "~/.claude"
+# Target names are arbitrary labels you choose — the tool does not treat any
+# name specially or hardcode support for a particular harness. Declare one
+# target per place you want this source materialized.
+[targets.agent-a]
+dest = "~/.agent-a"
 
-[targets.hermes]
-dest = "~/.hermes"
+[targets.agent-b]
+dest = "~/.agent-b"

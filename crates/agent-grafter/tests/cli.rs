@@ -127,10 +127,10 @@ impl RunResult {
 }
 
 /// A manifest with one declared link entry ("memory") and one target
-/// ("claude") whose `dest` is some placeholder that need not exist —
+/// ("example") whose `dest` is some placeholder that need not exist —
 /// sufficient for `apply`'s read-only reporting, which never touches it.
 const ONE_TARGET_MANIFEST: &str =
-    "link = [\"memory\"]\n\n[targets.claude]\ndest = \"placeholder\"\n";
+    "link = [\"memory\"]\n\n[targets.example]\ndest = \"placeholder\"\n";
 
 #[test]
 fn dry_run_changes_nothing_on_disk() {
@@ -153,7 +153,7 @@ fn dry_run_still_reports_the_work_it_would_do() {
         "dry-run must name what it would act on"
     );
     assert!(
-        out.contains("claude"),
+        out.contains("example"),
         "dry-run must name which target it would act on"
     );
 }
@@ -164,7 +164,7 @@ fn status_exits_3_when_a_declared_link_has_drifted() {
     // nothing exists at dest.join("memory") — that is drift.
     let env = TestEnv::with_manifest("link = [\"memory\"]");
     env.write_manifest(&format!(
-        "link = [\"memory\"]\n\n[targets.claude]\ndest = '{}'\n",
+        "link = [\"memory\"]\n\n[targets.example]\ndest = '{}'\n",
         env.path().display()
     ));
     env.run(&["status"]).assert_exit_code(3);
@@ -210,7 +210,7 @@ fn status_exits_0_when_the_declared_link_is_already_in_place() {
     safelink::create::create_dir_link(&source_dir, &link).expect("create link");
 
     env.write_manifest(&format!(
-        "link = [\"memory\"]\n\n[targets.claude]\ndest = '{}'\n",
+        "link = [\"memory\"]\n\n[targets.example]\ndest = '{}'\n",
         dest_root.display()
     ));
 

@@ -94,11 +94,11 @@ source = "."
 copy = ["AGENTS.md", "modes/"]
 link = ["memory/"]
 
-[targets.claude]
-dest = "/home/user/.claude"
+[targets.agent-a]
+dest = "/home/user/.agent-a"
 
-[targets.hermes]
-dest = "/home/user/.hermes"
+[targets.agent-b]
+dest = "/home/user/.agent-b"
 "#,
     )
     .expect("well-formed manifest should parse");
@@ -107,8 +107,8 @@ dest = "/home/user/.hermes"
     assert_eq!(m.link, vec!["memory/".to_string()]);
     assert_eq!(m.targets.len(), 2);
     assert_eq!(
-        m.targets["claude"].dest,
-        std::path::PathBuf::from("/home/user/.claude")
+        m.targets["agent-a"].dest,
+        std::path::PathBuf::from("/home/user/.agent-a")
     );
 }
 
