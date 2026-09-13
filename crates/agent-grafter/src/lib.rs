@@ -3,5 +3,6 @@
 //! `manifest::parse` directly on raw TOML strings, without going through
 //! the CLI or a file on disk.
 
+pub mod apply;
 pub mod cli;
 pub mod manifest;
