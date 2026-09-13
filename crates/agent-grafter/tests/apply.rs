@@ -19,6 +19,14 @@ use agent_grafter::apply::{self, Report};
 use agent_grafter::manifest::{self, Manifest};
 use safelink::capability::{ForcedProbe, RealProbe, SymlinkProbe};
 
+/// Report lines carry file paths formatted with the platform's own separator
+/// (`Path::join` + `Display`), so a literal like `"modes/one.md"` only matches
+/// the report text on Unix. Use this wherever a test checks report *text* for
+/// a multi-segment path; a plain literal is fine for a single path segment.
+fn sep(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 /// A temp-dir sandbox laid out the way a real install is: a `source/`
 /// directory holding the canonical files, a `dest/` directory standing in for
 /// a target root like an agent's own config directory, and a manifest file
@@ -75,6 +83,22 @@ impl Env {
         );
         fs::write(self.manifest_path(), &toml).expect("write manifest");
         manifest::parse(&toml).expect("parse manifest")
+    }
+
+    /// Write a file (creating parents) under `dest/` — a file this tool did
+    /// not put there, standing in for whatever the user already had.
+    fn write_dest(&self, rel: &str, bytes: &[u8]) {
+        let path = self.dest().join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create dest parent");
+        }
+        fs::write(path, bytes).expect("write dest file");
+    }
+
+    /// Delete a file from `source/`, the way a user editing their canonical
+    /// tree would.
+    fn remove_source(&self, rel: &str) {
+        fs::remove_file(self.source().join(rel)).expect("remove source file");
     }
 
     /// Plan and execute in one step, the way `cli::apply` does for a real run.
@@ -615,5 +639,758 @@ fn a_missing_source_is_refused_per_entry() {
     assert!(
         !env.dest().join("never-created.md").exists(),
         "nothing may be created for a missing source"
+    );
+}
+
+// ===========================================================================
+// Prune (Task S3b). A file that used to be in the source, was materialized to
+// the destination, and has since been deleted from the source, is removed from
+// the destination — and *nothing else is*.
+//
+// The first two tests below are the load-bearing ones. The plan's own wording
+// for this feature ("destination entries absent from the manifest and from the
+// source are removed") would, read literally against a real target root like
+// an agent's config directory, authorize deleting a user's credentials,
+// settings and session transcripts. These two tests are what stands between
+// that reading and the user's disk, so they are written to fail loudly if
+// prune's scope ever widens from "inside a declared directory entry's own
+// subtree" to "the target root".
+// ===========================================================================
+
+#[test]
+fn prune_never_touches_anything_at_the_target_root() {
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    // The user's own files, sitting at the target root — exactly the shape of
+    // the real data a target like an agent's config directory holds. Every one
+    // of them is "absent from the manifest and absent from the source".
+    env.write_dest(".credentials.json", b"{\"token\":\"secret\"}");
+    env.write_dest("settings.json", b"{\"theme\":\"dark\"}");
+    env.write_dest("unrelated.txt", b"hand written");
+    env.write_dest("projects/session-transcript.jsonl", b"a long conversation");
+
+    // Give prune real work to do in the same run, so this is not passing
+    // merely because prune never ran at all.
+    env.remove_source("modes/one.md");
+    env.write_source("modes/two.md", b"second mode");
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        out.text().contains(&sep("pruned: modes/one.md")),
+        "the fixture must actually exercise prune, or it proves nothing: {}",
+        out.text()
+    );
+
+    assert_eq!(
+        fs::read(env.dest().join(".credentials.json")).unwrap(),
+        b"{\"token\":\"secret\"}",
+        "a credential file at the target root must never be pruned"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("settings.json")).unwrap(),
+        b"{\"theme\":\"dark\"}"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("unrelated.txt")).unwrap(),
+        b"hand written"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("projects/session-transcript.jsonl")).unwrap(),
+        b"a long conversation"
+    );
+
+    // Not even mentioned: prune must not enumerate the target root at all, so
+    // nothing there can appear in the report either.
+    let text = out.text();
+    for name in [
+        ".credentials.json",
+        "settings.json",
+        "unrelated.txt",
+        "session-transcript.jsonl",
+    ] {
+        assert!(
+            !text.contains(name),
+            "prune must not so much as enumerate {name} at the target root: {text}"
+        );
+    }
+}
+
+#[test]
+fn prune_is_scoped_to_each_declared_directorys_own_subtree() {
+    // Distinct from the test above: this one is about *per-entry* scoping. A
+    // whole directory tree at the target root that shares no name with
+    // anything declared is outside every declared subtree, so prune must not
+    // descend into it — not even to look.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    env.write_source("modes/nested/deep.md", b"nested mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    env.write_dest("some-other-dir/notes.md", b"user's own notes");
+    env.write_dest("some-other-dir/further/down.md", b"further down");
+    env.write_dest("plugins/config.json", b"{}");
+
+    env.remove_source("modes/nested/deep.md");
+    let before_others = snapshot(&env.dest().join("some-other-dir"));
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        out.text().contains(&sep("pruned: modes/nested/deep.md")),
+        "the declared subtree's own stale file must still be pruned: {}",
+        out.text()
+    );
+    assert!(
+        !env.dest().join("modes/nested/deep.md").exists(),
+        "the stale file inside the declared subtree is gone"
+    );
+
+    assert_eq!(
+        before_others,
+        snapshot(&env.dest().join("some-other-dir")),
+        "an undeclared directory at the target root must be untouched"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("plugins/config.json")).unwrap(),
+        b"{}"
+    );
+}
+
+#[test]
+fn a_file_deleted_from_the_source_is_backed_up_and_then_removed_from_dest() {
+    let env = Env::new();
+    env.write_source("modes/keep.md", b"still declared");
+    env.write_source("modes/gone.md", b"about to be deleted");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    assert_eq!(
+        fs::read(env.dest().join("modes/gone.md")).unwrap(),
+        b"about to be deleted"
+    );
+
+    env.remove_source("modes/gone.md");
+
+    let plan = apply::plan(&manifest, env.root(), &RealProbe);
+    let timestamp = plan.run_timestamp.clone();
+    let out = apply::execute(&plan, &RealProbe);
+
+    assert!(!out.failed, "prune must not fail: {}", out.text());
+    assert!(
+        out.text().contains(&sep("pruned: modes/gone.md")),
+        "the prune must be reported: {}",
+        out.text()
+    );
+    assert!(
+        !env.dest().join("modes/gone.md").exists(),
+        "the file must be gone from the destination"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("modes/keep.md")).unwrap(),
+        b"still declared",
+        "a still-declared sibling must survive"
+    );
+
+    // Two separate `.join()` calls, not one `.join("modes/gone.md")`: a
+    // single call pushes its argument as one opaque segment, preserving
+    // whatever separator character it was typed with, so it would not match
+    // `backup.display()`'s all-native-separator rendering on Windows.
+    let backup = env
+        .dest()
+        .join(".agrafter-backups")
+        .join(&timestamp)
+        .join("modes")
+        .join("gone.md");
+    assert_eq!(
+        fs::read(&backup).unwrap_or_else(|e| panic!("no backup at {}: {e}", backup.display())),
+        b"about to be deleted",
+        "a pruned file's content must survive in the backup"
+    );
+    assert!(
+        out.text().contains(&backup.display().to_string()),
+        "the report must name where the content went: {}",
+        out.text()
+    );
+}
+
+#[test]
+fn dry_run_reports_a_prune_without_performing_it() {
+    let env = Env::new();
+    env.write_source("modes/gone.md", b"about to be deleted");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    env.remove_source("modes/gone.md");
+
+    let before = snapshot(&env.dest());
+    let described = apply::plan(&manifest, env.root(), &RealProbe).describe();
+
+    assert!(
+        described
+            .text()
+            .contains(&sep("would prune: modes/gone.md")),
+        "dry-run must say what it would prune: {}",
+        described.text()
+    );
+    assert_eq!(
+        before,
+        snapshot(&env.dest()),
+        "a dry run must not remove, back up, or create anything"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("modes/gone.md")).unwrap(),
+        b"about to be deleted"
+    );
+}
+
+#[test]
+fn a_link_entrys_destination_is_never_walked_for_pruning() {
+    // A `link` entry's destination *is* the source, reached through a link.
+    // Walking it for prune candidates would mean deleting through the link,
+    // into the tree this whole tool exists to treat as the source of truth.
+    let env = Env::new();
+    env.write_source("memory/note.md", b"remembered");
+    let manifest = env.write_manifest("link = [\"memory\"]");
+    let first = env.apply(&manifest, &RealProbe);
+    assert!(!first.refused && !first.failed, "setup: {}", first.text());
+
+    // A file placed "inside the destination" — which, the destination being a
+    // link, means inside the source. It is not declared anywhere.
+    fs::write(env.dest().join("memory/scratch.md"), b"written by hand").unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert_eq!(
+        fs::read(env.source().join("memory/scratch.md")).unwrap(),
+        b"written by hand",
+        "prune must never reach through a link into the source"
+    );
+    assert!(
+        !out.text().contains("scratch.md"),
+        "a link entry's destination must not even be enumerated: {}",
+        out.text()
+    );
+    assert!(
+        !out.text().contains("prune"),
+        "a link entry contributes no prune candidates at all: {}",
+        out.text()
+    );
+}
+
+#[test]
+fn a_link_found_where_a_prune_candidate_was_expected_is_left_in_place() {
+    // `is_dir()` and `is_symlink()` can both be true at once, so deciding
+    // "recurse here" or "delete this" from a bare metadata check is wrong.
+    // Every step of the prune walk asks `classify` first.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    // Real data somewhere else entirely, and two links to it planted inside
+    // the declared subtree where prune candidates would otherwise be.
+    let elsewhere = env.root().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::write(elsewhere.join("precious.md"), b"real user data").unwrap();
+    safelink::create::create_dir_link(&elsewhere, &env.dest().join("modes/linked-dir")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        elsewhere.join("precious.md"),
+        env.dest().join("modes/linked-file.md"),
+    )
+    .unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        !out.failed,
+        "a link found mid-walk is not a failure: {}",
+        out.text()
+    );
+    assert_eq!(
+        fs::read(elsewhere.join("precious.md")).unwrap(),
+        b"real user data",
+        "nothing may be deleted through the link"
+    );
+    assert!(
+        env.dest().join("modes/linked-dir").exists(),
+        "the directory link itself must survive"
+    );
+    assert!(
+        out.text().contains(&sep("modes/linked-dir")),
+        "and it must be reported, not silently skipped: {}",
+        out.text()
+    );
+    #[cfg(unix)]
+    {
+        assert!(
+            fs::symlink_metadata(env.dest().join("modes/linked-file.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the file link itself must survive"
+        );
+        assert!(
+            out.text().contains("modes/linked-file.md"),
+            "and it must be reported too: {}",
+            out.text()
+        );
+    }
+}
+
+#[test]
+fn a_source_directory_that_has_vanished_prunes_nothing_at_all() {
+    // The asymmetry that makes prune safe: under-reading the *destination*
+    // finds fewer candidates (harmless), while under-reading the *source*
+    // makes every materialized file look undeclared. An unmounted volume is
+    // not a licence to wipe the destination.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    env.write_source("modes/nested/two.md", b"second mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    let before = snapshot(&env.dest().join("modes"));
+    env.remove_source("modes/nested/two.md");
+    fs::remove_dir(env.source().join("modes/nested")).unwrap();
+    env.remove_source("modes/one.md");
+    fs::remove_dir(env.source().join("modes")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        out.refused,
+        "a vanished source is refused, not acted on: {}",
+        out.text()
+    );
+    assert!(
+        !out.text().contains("prune"),
+        "and it must produce no prune candidates whatsoever: {}",
+        out.text()
+    );
+    assert_eq!(
+        before,
+        snapshot(&env.dest().join("modes")),
+        "the materialized subtree must be exactly as it was"
+    );
+}
+
+#[test]
+fn an_empty_source_directory_still_prunes_what_it_no_longer_holds() {
+    // The legitimate twin of the test above: present-but-empty is a real,
+    // declarable state, and everything the destination still holds for it is
+    // genuinely stale.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    env.remove_source("modes/one.md");
+    assert!(env.source().join("modes").is_dir(), "still a directory");
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        out.text().contains(&sep("pruned: modes/one.md")),
+        "an emptied source directory still prunes: {}",
+        out.text()
+    );
+    assert!(!env.dest().join("modes/one.md").exists());
+}
+
+// ===========================================================================
+// Required test 10 (Ruling F): retention and this run's own backup-writing, in
+// one single `apply` invocation.
+// ===========================================================================
+
+#[test]
+fn one_run_sweeps_old_backups_and_writes_its_own_without_either_disturbing_the_other() {
+    let env = Env::new();
+    env.write_source("modes/one.md", b"version one");
+    env.write_source("modes/gone.md", b"about to be deleted");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    // Ten backup directories already on disk, fabricated rather than produced
+    // by ten timed runs. This run makes an eleventh, so exactly one must go.
+    let backups = env.dest().join(".agrafter-backups");
+    fs::create_dir_all(&backups).unwrap();
+    let fabricated: Vec<String> = (1..=10)
+        .map(|day| format!("202401{day:02}T000000Z"))
+        .collect();
+    for name in &fabricated {
+        let dir = backups.join(name);
+        fs::create_dir_all(dir.join("modes")).unwrap();
+        fs::write(dir.join("modes/one.md"), name.as_bytes()).unwrap();
+    }
+
+    // This run both replaces a file (a backup) and prunes one (another backup).
+    env.write_source("modes/one.md", b"version two");
+    env.remove_source("modes/gone.md");
+
+    let plan = apply::plan(&manifest, env.root(), &RealProbe);
+    let timestamp = plan.run_timestamp.clone();
+    let out = apply::execute(&plan, &RealProbe);
+    let text = out.text();
+
+    assert!(!out.failed, "nothing here should fail: {text}");
+    assert!(
+        text.contains("pruned backup: 20240101T000000Z"),
+        "the oldest backup must be swept, by name: {text}"
+    );
+    assert!(
+        text.contains(&sep("wrote: modes/one.md")) && text.contains(&sep("pruned: modes/gone.md")),
+        "the run's own work must still have happened: {text}"
+    );
+
+    let mut present: Vec<String> = fs::read_dir(&backups)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    present.sort();
+    assert_eq!(
+        present.len(),
+        10,
+        "exactly the limit must remain, got {present:?}"
+    );
+    assert!(
+        present.contains(&timestamp),
+        "this run's own backup directory must be among the survivors: {present:?}"
+    );
+    assert!(
+        !present.contains(&fabricated[0]),
+        "the oldest must be the one that went: {present:?}"
+    );
+    assert!(
+        !backups.join(&fabricated[0]).exists(),
+        "and it must be gone from disk, contents and all"
+    );
+    for name in &fabricated[1..] {
+        assert_eq!(
+            fs::read(backups.join(name).join("modes/one.md")).unwrap(),
+            name.as_bytes(),
+            "a surviving backup's contents must be intact"
+        );
+    }
+
+    // The sweep ran first and left this run's own backups completely alone.
+    let mine = backups.join(&timestamp);
+    assert_eq!(
+        fs::read(mine.join("modes/one.md")).unwrap(),
+        b"version one",
+        "the replaced file's old content must be in this run's backup"
+    );
+    assert_eq!(
+        fs::read(mine.join("modes/gone.md")).unwrap(),
+        b"about to be deleted",
+        "the pruned file's content must be in this run's backup"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("modes/one.md")).unwrap(),
+        b"version two"
+    );
+    assert!(!env.dest().join("modes/gone.md").exists());
+}
+
+#[test]
+fn dry_run_reports_the_retention_sweep_without_removing_anything() {
+    let env = Env::new();
+    env.write_source("modes/one.md", b"version one");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    let backups = env.dest().join(".agrafter-backups");
+    fs::create_dir_all(&backups).unwrap();
+    for day in 1..=12 {
+        fs::create_dir_all(backups.join(format!("202401{day:02}T000000Z"))).unwrap();
+    }
+
+    let before = snapshot(&backups);
+    let described = apply::plan(&manifest, env.root(), &RealProbe).describe();
+
+    assert!(
+        described
+            .text()
+            .contains("would prune backup: 20240101T000000Z")
+            && described
+                .text()
+                .contains("would prune backup: 20240102T000000Z"),
+        "dry-run must name the backups it would sweep: {}",
+        described.text()
+    );
+    assert_eq!(
+        before,
+        snapshot(&backups),
+        "a dry run must not sweep anything"
+    );
+}
+
+#[test]
+fn a_linked_intermediate_component_of_a_declared_path_is_never_walked_through() {
+    // Every other fixture in this file declares a single-segment entry, which
+    // is exactly why this went unnoticed: with one component there is only one
+    // path to classify, and classifying the joined result is the same thing.
+    // With two, it is not. `dest.join("agents/modes")` is resolved by the
+    // kernel *through* `dest/agents` before `classify` ever sees the final
+    // path, so classifying only the end of the path reports `NotALink` about
+    // an object that can live entirely outside the target root.
+    let env = Env::new();
+    env.write_source("agents/modes/declared.md", b"declared");
+    let manifest = env.write_manifest("copy = [\"agents/modes\"]");
+
+    // Somewhere else entirely — standing in for whatever a stale link points
+    // at after the user moved their source tree.
+    let outside = env.root().join("outside");
+    fs::create_dir_all(outside.join("modes")).unwrap();
+    fs::write(outside.join("modes/stray.md"), b"not ours to delete").unwrap();
+    fs::write(outside.join("unrelated.md"), b"also not ours").unwrap();
+
+    // A link at the *intermediate* component, not at the scope root.
+    safelink::create::create_dir_link(&outside, &env.dest().join("agents")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert_eq!(
+        fs::read(outside.join("modes/stray.md")).unwrap(),
+        b"not ours to delete",
+        "a file outside the target root must never be pruned — reached here \
+         only by resolving through a linked intermediate path component: {text}"
+    );
+    assert_eq!(
+        fs::read(outside.join("unrelated.md")).unwrap(),
+        b"also not ours"
+    );
+    assert!(
+        !text.contains("pruned: ") && !text.contains("would prune: "),
+        "nothing may be planned for removal once the path escapes: {text}"
+    );
+    assert!(
+        text.contains("prune skipped"),
+        "and the refusal must be reported, not silent: {text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_path_that_cannot_be_read_is_not_treated_as_deleted() {
+    // "Absent from the source" was decided by `symlink_metadata(...).is_ok()`,
+    // which reads *every* error as "gone" — including permission denied. An
+    // unreadable source must never become a deletion.
+    //
+    // Reached without any race: `collect_files` records a directory symlink in
+    // the source as a traversal leaf without descending, so the source walk
+    // succeeds while the per-file stat underneath it does not.
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    env.write_source("modes/sub/keep.md", b"materialized earlier");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    assert_eq!(
+        fs::read(env.dest().join("modes/sub/keep.md")).unwrap(),
+        b"materialized earlier",
+        "setup: the file must be materialized before the source becomes unreadable"
+    );
+
+    // Replace the real source subdirectory with a link to one the process
+    // cannot traverse.
+    let locked = env.root().join("locked");
+    fs::create_dir(&locked).unwrap();
+    env.remove_source("modes/sub/keep.md");
+    fs::remove_dir(env.source().join("modes/sub")).unwrap();
+    safelink::create::create_dir_link(&locked, &env.source().join("modes/sub")).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    if fs::read(env.source().join("modes/sub/keep.md")).is_err()
+        && fs::metadata(&locked).is_ok_and(|m| m.permissions().mode() & 0o777 == 0)
+        && std::fs::symlink_metadata(env.source().join("modes/sub/keep.md"))
+            .err()
+            .map(|e| e.kind())
+            != Some(std::io::ErrorKind::PermissionDenied)
+    {
+        // Privileges ignore the mode bits (root in a container). The case
+        // cannot be produced here; asserting would test the runner.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        fs::read(env.dest().join("modes/sub/keep.md")).unwrap(),
+        b"materialized earlier",
+        "an unreadable source path must not be read as a deleted one: {text}"
+    );
+    assert!(
+        !text.contains("pruned: modes/sub/keep.md"),
+        "and it must not even be planned for removal: {text}"
+    );
+    assert!(
+        text.contains("prune skipped"),
+        "the undecidable path must be reported, not silently skipped: {text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_directory_replaced_by_a_plain_file_still_prunes_what_it_held() {
+    // The case the fix above must not regress: the source now has a plain
+    // *file* where a directory used to be, so stat'ing a path *under* it fails
+    // with "not a directory". That is genuinely gone, not undecidable.
+    let env = Env::new();
+    env.write_source("modes/sub/old.md", b"materialized earlier");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    assert!(env.dest().join("modes/sub/old.md").exists(), "setup");
+
+    env.remove_source("modes/sub/old.md");
+    fs::remove_dir(env.source().join("modes/sub")).unwrap();
+    fs::write(env.source().join("modes/sub"), b"now a file").unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        out.text().contains("pruned: modes/sub/old.md"),
+        "a path whose source parent is now a plain file is genuinely gone: {}",
+        out.text()
+    );
+    assert!(!env.dest().join("modes/sub/old.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_destination_subtree_that_cannot_be_read_prunes_nothing_and_says_so() {
+    // The safe direction is already forced (no candidates from a partial
+    // walk). This is about honesty: a prune pass that quietly did nothing
+    // reads exactly like one that had nothing to do.
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    env.write_source("modes/nested/two.md", b"second mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    env.remove_source("modes/nested/two.md");
+    let locked = env.dest().join("modes/nested");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    if fs::read_dir(&locked).is_ok() {
+        // Running with privileges that ignore the mode bits (root in a
+        // container, typically). The case cannot be produced here, and
+        // asserting anyway would be asserting about the runner, not the code.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let described = apply::plan(&manifest, env.root(), &RealProbe).describe();
+    let text = described.text();
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        text.contains("prune skipped") && text.contains("modes"),
+        "an unreadable destination subtree must be reported, not swallowed: {text}"
+    );
+    assert!(
+        !text.contains("would prune:"),
+        "and nothing may be planned for removal from a walk that failed: {text}"
+    );
+    assert_eq!(
+        fs::read(locked.join("two.md")).unwrap(),
+        b"second mode",
+        "the file is still there, unpruned"
+    );
+}
+
+#[test]
+fn two_targets_sharing_a_root_sweep_its_backups_once_not_once_each() {
+    // Two `[targets.*]` may point at the same directory — the destination
+    // conflict check already exists because of exactly that. They share one
+    // `.agrafter-backups/`, so sweeping it per-target would remove each
+    // expired directory once and then fail removing it again, reporting an
+    // unexpected error over a directory that is already correctly gone.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let toml = format!(
+        "source = \"source\"\ncopy = [\"modes\"]\n\n\
+         [targets.agent-a]\ndest = '{0}'\n\n[targets.agent-b]\ndest = '{0}'\n",
+        env.dest().display()
+    );
+    fs::write(env.manifest_path(), &toml).unwrap();
+    let manifest = manifest::parse(&toml).unwrap();
+
+    let backups = env.dest().join(".agrafter-backups");
+    fs::create_dir_all(&backups).unwrap();
+    for day in 1..=12 {
+        let dir = backups.join(format!("202401{day:02}T000000Z"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("kept.md"), b"backed up").unwrap();
+    }
+
+    let plan = apply::plan(&manifest, env.root(), &RealProbe);
+
+    let planned: Vec<&PathBuf> = plan
+        .retention
+        .iter()
+        .flat_map(|sweep| sweep.removals.iter())
+        .collect();
+    assert_eq!(
+        planned.len(),
+        2,
+        "one shared backup directory must be swept once, not once per \
+         target — a plan that lists a removal twice also prints it twice \
+         under --dry-run: {planned:?}"
+    );
+
+    let out = apply::execute(&plan, &RealProbe);
+    assert!(
+        !out.failed,
+        "removing an already-removed backup must not be reported as an \
+         unexpected error: {}",
+        out.text()
+    );
+    assert_eq!(
+        fs::read_dir(&backups).unwrap().count(),
+        10,
+        "and the sweep must still have done its job"
+    );
+}
+
+#[test]
+fn the_backup_directory_is_never_itself_a_prune_candidate() {
+    // `.agrafter-backups` is this tool's bookkeeping, not an entry's content.
+    // A manifest pathological enough to declare it by name must still not put
+    // it in the prune walk.
+    let env = Env::new();
+    env.write_source(".agrafter-backups/decoy.md", b"declared");
+    let manifest = env.write_manifest("copy = [\".agrafter-backups\"]");
+    env.apply(&manifest, &RealProbe);
+
+    // A real backup, of the shape a normal run would leave behind.
+    let real_backup = env
+        .dest()
+        .join(".agrafter-backups/20240101T000000Z/modes/one.md");
+    fs::create_dir_all(real_backup.parent().unwrap()).unwrap();
+    fs::write(&real_backup, b"an earlier version").unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+
+    assert!(
+        !out.text().contains("prune"),
+        "nothing under the backup directory may ever be a prune candidate: {}",
+        out.text()
+    );
+    assert_eq!(
+        fs::read(&real_backup).unwrap(),
+        b"an earlier version",
+        "a real backup must survive"
     );
 }

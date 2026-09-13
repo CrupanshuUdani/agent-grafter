@@ -15,14 +15,33 @@
 //! therefore structural rather than a discipline the next editor has to
 //! remember: there is no second, simplified decision path to drift away from.
 //!
-//! Every link, copy and removal goes through `safelink` (Constraint 5). The
-//! only filesystem work this module does itself is *reading* — enumerating a
-//! declared directory's files and comparing bytes to decide whether anything
-//! needs doing at all.
+//! Every link creation and every link removal goes through `safelink`
+//! (Constraint 5). The filesystem work this module does itself is *reading* —
+//! enumerating a declared directory's files and comparing bytes to decide
+//! whether anything needs doing — plus two narrow deletions of this tool's own
+//! prior output: unlinking a copy whose source is gone ([`prune_one`]) and
+//! sweeping an expired backup directory (`crate::retention`). Both use the
+//! narrowest primitive that can do the job, both after `safelink::classify`
+//! has confirmed what they are about to touch, and neither ever removes a
+//! link.
+//!
+//! **Prune's scope is the single most important safety property here.** It
+//! reconciles a declared `copy` directory's own destination subtree against
+//! that subtree's current source contents, and it never enumerates — let alone
+//! touches — anything at a target root outside those subtrees. See
+//! [`prune_scope`] for why that is structural rather than a convention.
+//!
+//! *One deliberate limitation.* Prune removes stale **files**, never
+//! directories. A directory that emptied because every file under it left the
+//! source is left behind as an empty directory. That matches the requirement
+//! this implements ("a file deleted from the source disappears from the
+//! destination"), and the cost of the alternative is poor: adding directory
+//! removal to the most dangerous code path in the project, to win something
+//! purely cosmetic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use safelink::capability::SymlinkProbe;
@@ -31,6 +50,7 @@ use safelink::materialize::{MaterializeOptions, materialize};
 use safelink::op::{Entry, LinkOp};
 
 use crate::manifest::Manifest;
+use crate::retention::{KEEP_BACKUPS, plan_retention, remove_backup_dir};
 
 /// The directory, under each target root, that replaced files are backed up
 /// into. One timestamped subdirectory per `apply` invocation.
@@ -75,10 +95,80 @@ pub struct PlannedEntry {
     pub decision: Decision,
 }
 
+/// What the planner decided about one object found inside a declared
+/// directory's destination subtree but no longer present in its source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PruneDecision {
+    /// A plain file this tool materialized from a source file that is gone.
+    /// Back it up, then unlink it.
+    Remove,
+    /// A link was found where a prune candidate would otherwise be. It is
+    /// neither descended into nor removed — see [`PlannedPrune`].
+    LeftInPlace(String),
+}
+
+/// One object inside a declared `copy`-directory's destination subtree that
+/// the current source no longer accounts for.
+///
+/// Deliberately *not* a [`PlannedEntry`] with a clever `entry: None`: that
+/// field already means "refused before an `Entry` could be built", and a prune
+/// candidate is the opposite shape — it has a destination and, by definition,
+/// no source at all. Conflating the two would make both harder to read at
+/// exactly the place where reading carefully matters most.
+#[derive(Debug, Clone)]
+pub struct PlannedPrune {
+    /// The `[targets.*]` name this belongs to.
+    pub target: Option<String>,
+    /// What the user sees: the path relative to the source root, the same
+    /// convention [`PlannedEntry::label`] uses for a directory-copy expansion
+    /// (`"modes/old-file.md"` for the declared entry `"modes"`).
+    pub label: String,
+    /// The absolute destination path. Always inside the declared directory's
+    /// own destination subtree — see [`prune_scope`].
+    pub dest: PathBuf,
+    /// Where this file's content is preserved before it is unlinked. `None`
+    /// only for a candidate that is not going to be removed.
+    pub backup: Option<PathBuf>,
+    pub decision: PruneDecision,
+}
+
+/// The retention sweep's decision for one target root's backup directory.
+#[derive(Debug, Clone)]
+pub struct PlannedRetention {
+    pub target: Option<String>,
+    /// Backup directories to remove, oldest first.
+    pub removals: Vec<PathBuf>,
+}
+
+/// Something the planner could not determine, and declined to guess about.
+///
+/// Every such case in this module chooses the safe direction — do nothing —
+/// and every one of them then says so here. A pass that quietly did nothing is
+/// indistinguishable from one that had nothing to do, and Constraint 3's
+/// honesty requirement covers what a run *could not* decide just as much as
+/// what it decided.
+#[derive(Debug, Clone)]
+pub struct PlanNote {
+    pub target: Option<String>,
+    /// Printed verbatim, in both modes, so it must read as a complete
+    /// sentence and say what the consequence is.
+    pub message: String,
+}
+
 /// Everything one `apply` invocation intends to do.
 #[derive(Debug, Clone)]
 pub struct Plan {
+    /// Old backup directories to sweep. Executed **first**, before any entry
+    /// or prune — see [`execute`].
+    pub retention: Vec<PlannedRetention>,
+    /// What the planner could not determine. Reported in both modes; changes
+    /// no exit code, since nothing was attempted and nothing failed.
+    pub notes: Vec<PlanNote>,
     pub entries: Vec<PlannedEntry>,
+    /// Files to remove from a declared directory's destination subtree because
+    /// the source no longer has them. Always a subset of those subtrees; see
+    /// [`prune_scope`] for why that is structural and not a convention.
+    pub prunes: Vec<PlannedPrune>,
     /// One UTC timestamp for the whole invocation, naming this run's backup
     /// directory. Format `YYYYMMDDTHHMMSSZ`: lexically sortable, so listing
     /// the backup directories in name order lists them in time order.
@@ -124,8 +214,24 @@ impl Plan {
     /// refuse`). `same` is a statement of present fact and reads identically
     /// in both modes.
     pub fn describe(&self) -> Report {
-        let mut lines = Vec::with_capacity(self.entries.len());
+        let mut lines = Vec::with_capacity(self.entries.len() + self.prunes.len());
         let mut refused = false;
+
+        // Same order as `execute`: the sweep first, then the entries, then the
+        // prunes. A dry run that reordered the report would be describing a
+        // different run than the one it claims to preview.
+        for sweep in &self.retention {
+            for removal in &sweep.removals {
+                lines.push(with_target(
+                    &sweep.target,
+                    &format!("would prune backup: {}", dir_name(removal)),
+                ));
+            }
+        }
+        for note in &self.notes {
+            lines.push(with_target(&note.target, &note.message));
+        }
+
         for planned in &self.entries {
             let body = match &planned.decision {
                 Decision::Same => format!("same: {}", planned.label),
@@ -143,10 +249,47 @@ impl Plan {
             };
             lines.push(prefixed(planned, &body));
         }
+
+        for prune in &self.prunes {
+            lines.push(with_target(&prune.target, &describe_prune(prune, true)));
+        }
+
         Report {
             lines,
             refused,
             failed: false,
+        }
+    }
+}
+
+/// The body of one prune's report line, in either mode.
+///
+/// `LeftInPlace` reads identically in both: it is a statement of present fact
+/// plus a refusal to act, and there is no hypothetical version of "this is a
+/// link and it is staying".
+fn describe_prune(prune: &PlannedPrune, hypothetical: bool) -> String {
+    match &prune.decision {
+        PruneDecision::Remove => {
+            let verb = if hypothetical {
+                "would prune"
+            } else {
+                "pruned"
+            };
+            let note = match &prune.backup {
+                Some(path) => {
+                    let backed = if hypothetical {
+                        "would back up to"
+                    } else {
+                        "backed up to"
+                    };
+                    format!(" ({backed} {})", path.display())
+                }
+                None => String::new(),
+            };
+            format!("{verb}: {}{note}", prune.label)
+        }
+        PruneDecision::LeftInPlace(reason) => {
+            format!("left in place: {}: {reason}", prune.label)
         }
     }
 }
@@ -164,6 +307,8 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
     let run_timestamp = utc_timestamp(SystemTime::now());
     let source_root = absolutize(&manifest_dir.join(&manifest.source));
     let mut entries = Vec::new();
+    let mut prunes = Vec::new();
+    let mut notes = Vec::new();
 
     let mut target_names: Vec<&String> = manifest.targets.keys().collect();
     target_names.sort();
@@ -186,13 +331,16 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
             });
         }
         return Plan {
+            retention: Vec::new(),
+            notes,
             entries,
+            prunes,
             run_timestamp,
         };
     }
 
-    for target_name in target_names {
-        let target = &manifest.targets[target_name];
+    for target_name in &target_names {
+        let target = &manifest.targets[*target_name];
         plan_target(
             manifest,
             &TargetContext {
@@ -203,15 +351,126 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
                 probe,
             },
             &mut entries,
+            &mut prunes,
+            &mut notes,
         );
     }
 
     refuse_conflicting_destinations(&mut entries);
+    // After the refusals, so a prune is never planned against a destination
+    // some entry has just been told not to touch either.
+    reconcile_prunes(&entries, &mut prunes);
+
+    // Last, because whether this run will create a backup directory of its own
+    // depends on the two passes above having settled which entries and prunes
+    // actually survive.
+    //
+    // One sweep per *backup directory*, not per target: two `[targets.*]` may
+    // point at the same root, and they then share one `.agrafter-backups/`.
+    // Sweeping it once per target would list every expired directory twice —
+    // printed twice under `--dry-run`, and on a real run removed once and then
+    // failed on the second attempt, reporting an unexpected error over a
+    // directory that is already correctly gone. It would also split the "is
+    // this run going to write a backup here" question across two targets that
+    // share the answer.
+    let mut swept: HashSet<PathBuf> = HashSet::new();
+    let mut retention = Vec::new();
+    for name in &target_names {
+        if !swept.insert(manifest.targets[*name].dest.join(BACKUP_DIR)) {
+            continue;
+        }
+        plan_target_retention(
+            name,
+            &manifest.targets[*name].dest,
+            &run_timestamp,
+            &entries,
+            &prunes,
+            &mut retention,
+            &mut notes,
+        );
+    }
 
     Plan {
+        retention,
+        notes,
         entries,
+        prunes,
         run_timestamp,
     }
+}
+
+/// The retention sweep for one backup directory.
+///
+/// This run's own backup directory is counted toward the limit when — and only
+/// when — something in this run is actually going to write a backup into it.
+/// Counting it unconditionally would retire a real backup a run later than it
+/// should on every no-op run.
+///
+/// "Going to write a backup *into it*" is asked of the planned backup paths
+/// themselves rather than of which target an entry belongs to. Two targets may
+/// share a root and therefore share this directory, so an entry belonging to
+/// the other one still fills it — the path is the thing that decides, and the
+/// target name is only a label for the report.
+fn plan_target_retention(
+    target_name: &str,
+    target_dest: &Path,
+    run_timestamp: &str,
+    entries: &[PlannedEntry],
+    prunes: &[PlannedPrune],
+    out: &mut Vec<PlannedRetention>,
+    notes: &mut Vec<PlanNote>,
+) {
+    let backups_dir = target_dest.join(BACKUP_DIR);
+    let lands_here = |backup: &Option<PathBuf>| {
+        backup
+            .as_ref()
+            .is_some_and(|path| path.starts_with(&backups_dir))
+    };
+    let will_back_up = entries
+        .iter()
+        .any(|e| e.decision == Decision::Write && lands_here(&e.backup))
+        || prunes
+            .iter()
+            .any(|p| p.decision == PruneDecision::Remove && lands_here(&p.backup));
+
+    let prospective = will_back_up.then_some(run_timestamp);
+
+    match plan_retention(&backups_dir, KEEP_BACKUPS, prospective) {
+        Ok(removals) => out.push(PlannedRetention {
+            target: Some(target_name.to_string()),
+            removals,
+        }),
+        Err(e) => notes.push(PlanNote {
+            target: Some(target_name.to_string()),
+            message: format!(
+                "backup retention skipped: could not read {}: {e}. Old backups \
+                 are accumulating there; nothing else about this run is affected.",
+                backups_dir.display()
+            ),
+        }),
+    }
+}
+
+/// Drop any prune candidate that is not exclusively this prune's to remove.
+///
+/// Two cases, both belt rather than braces — neither should be reachable, and
+/// both are cheap to make unreachable *twice*:
+///
+///   - A destination some planned entry also claims. A candidate is by
+///     construction a path the source no longer holds, and every entry's
+///     destination comes from a path the source does hold, so the sets are
+///     disjoint. Enforced anyway, because "prune deletes what a write is about
+///     to create" is not a bug anyone should have to reason their way out of.
+///   - A duplicate. Two `[targets.*]` pointing at the same directory plan the
+///     same candidate twice; acting on it twice would make the second attempt
+///     an unexplained failure over a file that is already correctly gone.
+fn reconcile_prunes(entries: &[PlannedEntry], prunes: &mut Vec<PlannedPrune>) {
+    let claimed: HashSet<&PathBuf> = entries
+        .iter()
+        .filter_map(|planned| planned.entry.as_ref().map(|entry| &entry.dest))
+        .collect();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    prunes.retain(|prune| !claimed.contains(&prune.dest) && seen.insert(prune.dest.clone()));
 }
 
 /// Refuse every entry whose destination some other entry also claims.
@@ -300,7 +559,13 @@ struct TargetContext<'a> {
 
 /// Plan every declared entry for one target: `link` entries first, then
 /// `copy`, matching the order the rest of the CLI reports them in.
-fn plan_target(manifest: &Manifest, ctx: &TargetContext<'_>, out: &mut Vec<PlannedEntry>) {
+fn plan_target(
+    manifest: &Manifest,
+    ctx: &TargetContext<'_>,
+    out: &mut Vec<PlannedEntry>,
+    prunes: &mut Vec<PlannedPrune>,
+    notes: &mut Vec<PlanNote>,
+) {
     // Ruling 8. `MaterializeOptions` defaults to creating missing parents, and
     // its own doc comment warns that a typo in `dest` then silently builds a
     // whole tree in the wrong place. The target *root* is the one level that
@@ -322,13 +587,28 @@ fn plan_target(manifest: &Manifest, ctx: &TargetContext<'_>, out: &mut Vec<Plann
         out.push(plan_link_entry(ctx, name));
     }
     for name in &manifest.copy {
-        plan_copy_entry(ctx, name, out);
+        plan_copy_entry(ctx, name, out, prunes, notes);
     }
 }
 
 /// A `link` entry maps 1:1 and is never expanded: a directory source becomes
 /// one `DirectoryLink`, a file source one `FileSymlink` (which the engine may
 /// downgrade to a copy at execution time).
+///
+/// **A `link` entry is never pruned, and this is a prohibition rather than an
+/// omission.** Note that this function takes no `prunes` argument at all: a
+/// `link` entry has no way to contribute a prune candidate, because the only
+/// code that produces one is reached exclusively from `plan_copy_entry`'s
+/// directory branch.
+///
+/// The reason is that a `DirectoryLink`'s destination *is* its source. Reading
+/// through it sees the source's live contents; there is no independently
+/// materialized copy to reconcile against anything, so there is nothing that
+/// could meaningfully be stale. An implementer who "helpfully" walked a link
+/// entry's destination looking for files "not declared anywhere" and removed
+/// them would be deleting *through the link, into the source of truth* — the
+/// exact failure Global Constraint 3 (inherited from `safelink`: never delete
+/// through a link) exists to prevent. Do not add pruning here.
 fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
     let source = ctx.source_root.join(name);
     if !source.exists() {
@@ -354,7 +634,16 @@ fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
 /// A declared directory holding no files expands to no entries, and therefore
 /// reports nothing: there is no work to report, and inventing a fifth report
 /// verb for "nothing was in there" is not this task's to define.
-fn plan_copy_entry(ctx: &TargetContext<'_>, name: &str, out: &mut Vec<PlannedEntry>) {
+/// A `copy` entry naming a **file** contributes no prune candidates: a single
+/// file either exists or it does not, and there is no subtree to reconcile.
+/// Only the directory branch below reaches [`plan_prunes`].
+fn plan_copy_entry(
+    ctx: &TargetContext<'_>,
+    name: &str,
+    out: &mut Vec<PlannedEntry>,
+    prunes: &mut Vec<PlannedPrune>,
+    notes: &mut Vec<PlanNote>,
+) {
     let source = ctx.source_root.join(name);
     if !source.exists() {
         out.push(refusal(ctx.name, name, missing_source_reason(&source)));
@@ -373,6 +662,9 @@ fn plan_copy_entry(ctx: &TargetContext<'_>, name: &str, out: &mut Vec<PlannedEnt
 
     let mut relative = Vec::new();
     if let Err(e) = collect_files(&source, Path::new(""), &mut relative) {
+        // A *partial* source listing is the one input that could turn prune
+        // into a wipe, so this arm returns before `plan_prunes` is reached
+        // rather than pruning against whatever was read before the error.
         out.push(refusal(
             ctx.name,
             name,
@@ -384,15 +676,353 @@ fn plan_copy_entry(ctx: &TargetContext<'_>, name: &str, out: &mut Vec<PlannedEnt
         return;
     }
 
-    for rel in relative {
-        let label = Path::new(name).join(&rel).to_string_lossy().into_owned();
+    for rel in &relative {
+        let label = Path::new(name).join(rel).to_string_lossy().into_owned();
         let entry = Entry {
-            source: source.join(&rel),
-            dest: ctx.dest.join(name).join(&rel),
+            source: source.join(rel),
+            dest: ctx.dest.join(name).join(rel),
             op: LinkOp::FileCopy,
         };
         out.push(resolve(ctx, name, &label, entry));
     }
+
+    plan_prunes(ctx, name, &source, prunes, notes);
+}
+
+// ---------------------------------------------------------------------------
+// Prune. The scope boundary, and then the walk inside it.
+// ---------------------------------------------------------------------------
+
+/// The **only** directory prune is ever allowed to enumerate for one declared
+/// entry, or `None` when there is none.
+///
+/// This function is where the single most important safety property of this
+/// whole tool lives, so it is worth stating what that property is and why the
+/// structure — not a convention — guarantees it.
+///
+/// The plan's own wording for prune ("destination entries absent from the
+/// manifest and from the source are removed"), read literally against a real
+/// target root like an agent's config directory, would authorize enumerating
+/// that entire directory and deleting everything the manifest does not
+/// mention: credentials, settings, session transcripts — the real data this
+/// tool's whole declare-don't-discover design exists to leave alone. That
+/// reading is wrong. The correct scope is far narrower: prune reconciles a
+/// declared `copy` directory's own destination subtree against that same
+/// subtree's current source contents, and nothing else.
+///
+/// What makes that structural rather than aspirational:
+///
+///   1. This is the only function that turns a target root into a walkable
+///      path, and it builds that path **one component at a time from
+///      `ctx.dest`**, checking every level on the way down (see below).
+///   2. It is called from exactly one place: [`plan_prunes`], which is called
+///      from exactly one place: the directory branch of [`plan_copy_entry`].
+///      `link` entries and file `copy` entries therefore have no route here at
+///      all (Rulings A and B).
+///   3. The walk below never receives `ctx.dest`. It is handed the scope root
+///      and a relative prefix, so there is no expression anywhere in the prune
+///      path that could name a sibling of the declared directory.
+///
+/// **Why the descent is component-by-component, and not one `join` plus one
+/// `classify`.** That is what this function used to do, and it was wrong for
+/// any declared entry naming more than one segment. `ctx.dest.join("agents/modes")`
+/// is resolved by the kernel *through* `dest/agents` before `classify` ever
+/// sees the end of the path, so if `dest/agents` is a link, `classify` happily
+/// reports `NotALink` — about an object that may live nowhere near the target
+/// root. Prune would then enumerate and delete inside a completely unrelated
+/// directory. Classifying the joined result answers a question about the
+/// destination of the path, not about the path; only walking it level by level
+/// answers "does getting here pass through anything I must not cross".
+///
+/// So every level from `ctx.dest` down is classified in turn, and any of the
+/// following yields no scope, and therefore no prune candidates at all:
+///
+///   - **A link at any level, intermediate or final.** Including the stale
+///     `DirLink` left at `dest/modes` by an earlier `link = ["modes"]`
+///     declaration that has since become `copy = ["modes"]` — Ruling A's
+///     failure mode arriving by a different door. Reported, not silent.
+///   - **Ruling C.** A component named as the backup directory. Backups live
+///     at `target.dest/.agrafter-backups`, not nested inside a declared
+///     subdirectory, so a collision needs a manifest pathological enough to
+///     declare that name itself — which nothing stops it from doing.
+///     Hard-coded rather than argued to be impossible.
+///   - **Any component that is not a plain name** — `..`, an absolute root, a
+///     Windows prefix. `manifest::validate_entry` checks only an entry's *net*
+///     depth, so `"a/b/../../c"` is accepted today; refusing the component
+///     outright here means no `..` ever takes part in building a path this code
+///     is about to delete inside, whatever the manifest layer does or does not
+///     catch.
+///   - **No plain components at all.** A belt against ever returning
+///     `ctx.dest` itself, which is the one path this whole function exists to
+///     keep prune away from.
+///   - **A level that cannot be inspected**, or a final path that is not a real
+///     directory.
+fn prune_scope(ctx: &TargetContext<'_>, declared_dir: &str) -> Scope {
+    let mut current = ctx.dest.to_path_buf();
+    let mut depth = 0usize;
+
+    for component in Path::new(declared_dir).components() {
+        let name = match component {
+            Component::Normal(name) => name,
+            // `Components` keeps a leading `.`; it names the same directory,
+            // so it neither descends nor needs checking.
+            Component::CurDir => continue,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Scope::Blocked(format!(
+                    "the declared entry {declared_dir:?} contains a path \
+                     component that is not a plain name, so where it lands \
+                     cannot be established without resolving the filesystem; \
+                     nothing was removed. Spell it as a plain relative path."
+                ));
+            }
+        };
+        if name == BACKUP_DIR {
+            return Scope::Nothing;
+        }
+        current.push(name);
+
+        // classify() before any metadata question, at *every* level: `is_dir()`
+        // and `is_symlink()` can both be true at once, so `is_dir()` alone is
+        // not an answer to "is it safe to descend here" (Spike S1).
+        match classify(&current) {
+            Ok(LinkClass::NotALink) => {}
+            Ok(LinkClass::DirLink | LinkClass::FileLink) => {
+                return Scope::Blocked(format!(
+                    "{} is a link, so reaching the declared entry \
+                     {declared_dir:?} would mean resolving through it and \
+                     possibly outside {}; nothing was removed.",
+                    current.display(),
+                    ctx.dest.display()
+                ));
+            }
+            // Nothing materialized here yet. Not a problem, and not worth a
+            // line: there is simply no destination subtree to reconcile.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Scope::Nothing,
+            Err(e) => {
+                return Scope::Blocked(format!(
+                    "could not inspect {} while locating the declared entry \
+                     {declared_dir:?}: {e}; nothing was removed.",
+                    current.display()
+                ));
+            }
+        }
+        depth += 1;
+    }
+
+    if depth == 0 {
+        // `""`, `"."` — `manifest::validate_entry` already refuses these, and
+        // this is the backstop, because the failure it prevents is prune
+        // enumerating the target root itself.
+        return Scope::Nothing;
+    }
+    if !std::fs::symlink_metadata(&current).is_ok_and(|m| m.is_dir()) {
+        return Scope::Nothing;
+    }
+    Scope::Walk(current)
+}
+
+/// What [`prune_scope`] concluded about one declared entry.
+enum Scope {
+    /// Safe to enumerate: a real directory reached without crossing a link.
+    Walk(PathBuf),
+    /// Nothing to reconcile, and nothing worth a report line.
+    Nothing,
+    /// Refused. The string is the user-facing explanation, printed verbatim.
+    Blocked(String),
+}
+
+/// What the destination-subtree walk found at one relative path.
+enum Found {
+    /// A plain file. A prune candidate if the source no longer has it.
+    File,
+    /// A link. Never descended into, never removed (Ruling D).
+    Link,
+}
+
+/// Compare one declared directory's destination subtree against its current
+/// source subtree, and plan the difference.
+///
+/// **Reached only from [`plan_copy_entry`]'s directory branch, after
+/// `collect_files` on the source has already succeeded.** That ordering is the
+/// safety argument, and the asymmetry behind it is worth being explicit about:
+///
+///   - Under-reading the **destination** finds *fewer* candidates than exist.
+///     A file that should have been pruned survives another day. Harmless.
+///   - Under-reading the **source** makes correctly materialized files look
+///     undeclared, and prune would delete them. Catastrophic — and reachable
+///     without any adversary at all: the removable or network volume the
+///     missing-source message already anticipates, unmounted mid-run.
+///
+/// So only the source side gets a hard stop. An absent, unreadable, or
+/// non-directory source yields *zero* candidates and never a partial set. The
+/// legitimate twin is deliberately not caught by that: a source directory that
+/// is **present but empty** is a real state a user can declare, and everything
+/// the destination still holds under it genuinely is stale.
+fn plan_prunes(
+    ctx: &TargetContext<'_>,
+    declared_dir: &str,
+    source_dir: &Path,
+    out: &mut Vec<PlannedPrune>,
+    notes: &mut Vec<PlanNote>,
+) {
+    // Re-stated locally rather than inherited from the caller, so this
+    // function is safe to read (and to call) on its own terms.
+    if !source_dir.is_dir() {
+        return;
+    }
+    let scope = match prune_scope(ctx, declared_dir) {
+        Scope::Walk(scope) => scope,
+        Scope::Nothing => return,
+        Scope::Blocked(reason) => {
+            notes.push(PlanNote {
+                target: Some(ctx.name.to_string()),
+                message: format!("prune skipped for {declared_dir:?}: {reason}"),
+            });
+            return;
+        }
+    };
+
+    let mut found = Vec::new();
+    if let Err(e) = collect_dest_subtree(&scope, Path::new(""), 0, &mut found) {
+        // A partial destination listing only under-enumerates, so acting on it
+        // would be safe — but a run whose report depends on how far a failing
+        // walk happened to get is not one anybody can diff. Nothing, instead —
+        // and said out loud, because a prune pass that silently did nothing
+        // reads exactly like one that had nothing to do.
+        notes.push(PlanNote {
+            target: Some(ctx.name.to_string()),
+            message: format!(
+                "prune skipped for {declared_dir:?}: could not read {}: {e}. \
+                 Files the source no longer has may still be there; nothing \
+                 was removed.",
+                scope.display()
+            ),
+        });
+        return;
+    }
+
+    for (rel, kind) in found {
+        // The source's *current* contents decide. A single `symlink_metadata`
+        // rather than a lookup in the file list `plan_copy_entry` built,
+        // because that list holds only files: a directory, or a link, that the
+        // source still has at this relative path is not stale either, and
+        // asking the filesystem directly is the answer that cannot drift from
+        // how the list was assembled.
+        //
+        // The error *kind* is load-bearing, and reading it as a bare `is_ok()`
+        // was a bug: that turns "I could not find out" into "it is gone", and
+        // from there into a deletion. Only two kinds actually mean absent.
+        // Everything else is undecidable, and an undecidable source is never a
+        // reason to remove something — the same asymmetry the scope root is
+        // already governed by, applied per path.
+        match std::fs::symlink_metadata(source_dir.join(&rel)) {
+            Ok(_) => continue,
+            Err(e) if is_genuinely_absent(&e) => {}
+            Err(e) => {
+                notes.push(PlanNote {
+                    target: Some(ctx.name.to_string()),
+                    message: format!(
+                        "prune skipped for {}: could not tell whether the \
+                         source still has it: {e}. It was left in place.",
+                        Path::new(declared_dir).join(&rel).display()
+                    ),
+                });
+                continue;
+            }
+        }
+
+        let dest = scope.join(&rel);
+        // Belt over the braces above. `rel` is built only from `file_name()`
+        // components of entries read out of `scope`, so it cannot contain `..`
+        // and this cannot fire — which is exactly why it is cheap to check.
+        if !dest.starts_with(&scope) {
+            continue;
+        }
+
+        let label = Path::new(declared_dir)
+            .join(&rel)
+            .to_string_lossy()
+            .into_owned();
+        let decision = match kind {
+            Found::Link => PruneDecision::LeftInPlace(
+                "a link, not a file this tool materialized; refusing to remove \
+                 it or to delete anything through it"
+                    .to_string(),
+            ),
+            Found::File => PruneDecision::Remove,
+        };
+        let backup = match decision {
+            PruneDecision::Remove => backup_path(&dest, ctx.dest, ctx.run_timestamp),
+            PruneDecision::LeftInPlace(_) => None,
+        };
+        out.push(PlannedPrune {
+            target: Some(ctx.name.to_string()),
+            label,
+            dest,
+            backup,
+            decision,
+        });
+    }
+}
+
+/// Every plain file and every link beneath `dir`, as paths relative to it, in
+/// sorted order.
+///
+/// Distinct from [`collect_files`], which reads the *source* and cares only
+/// about what to copy. This one reads a **destination** and is about to decide
+/// what to delete, so it reports links separately instead of folding them in
+/// with files, and it never descends into one.
+///
+/// Every object is put to `classify` before anything is decided about it
+/// (Ruling D). A bare `is_dir()` check to choose "recurse here" is wrong:
+/// `is_dir()` and `is_symlink()` can both be true simultaneously on a junction,
+/// so the metadata question is only ever asked *after* `classify` has said the
+/// object is not a link.
+fn collect_dest_subtree(
+    dir: &Path,
+    prefix: &Path,
+    depth: usize,
+    out: &mut Vec<(PathBuf, Found)>,
+) -> io::Result<()> {
+    const MAX_DEPTH: usize = 64;
+    if depth > MAX_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to descend past {MAX_DEPTH} levels under {}",
+                dir.display()
+            ),
+        ));
+    }
+
+    let mut names: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .map(|e| e.map(|e| e.file_name().into()))
+        .collect::<io::Result<_>>()?;
+    names.sort();
+
+    for name in names {
+        // Ruling C, again and unconditionally: at every level, not just the
+        // top one, and regardless of whether it should be reachable here.
+        if name.as_os_str() == BACKUP_DIR {
+            continue;
+        }
+        let path = dir.join(&name);
+        let rel = prefix.join(&name);
+        match classify(&path)? {
+            LinkClass::DirLink | LinkClass::FileLink => out.push((rel, Found::Link)),
+            LinkClass::NotALink => {
+                let meta = std::fs::symlink_metadata(&path)?;
+                if meta.is_dir() {
+                    collect_dest_subtree(&path, &rel, depth + 1, out)?;
+                } else if meta.is_file() {
+                    out.push((rel, Found::File));
+                }
+                // Anything else (a socket, a device node) is not something
+                // this tool put here and not something it removes.
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `path` made absolute and lexically tidied, without resolving symlinks.
@@ -549,6 +1179,26 @@ fn decide_over_real_data(entry: &Entry, probe: &dyn SymlinkProbe) -> Decision {
     }
 }
 
+/// Whether a failure to stat a source path means it is genuinely not there.
+///
+/// Two kinds do, and only two:
+///
+///   - `NotFound` — the obvious one.
+///   - `NotADirectory` — a path component that used to be a directory is now a
+///     plain file, so everything that was under it is gone just as surely.
+///     Treating this as undecidable would leave a whole stale subtree behind
+///     forever on a perfectly ordinary source edit.
+///
+/// Every other kind — permission denied, an I/O error, a link that cannot be
+/// traversed — means the question was not answered, and an unanswered question
+/// is never grounds for a deletion.
+fn is_genuinely_absent(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
 /// Whether the destination already satisfies the entry (Ruling 4).
 ///
 /// **Known gap, deliberately left open:** this never checks where an existing
@@ -629,9 +1279,40 @@ fn backup_path(dest: &Path, target_dest: &Path, run_timestamp: &str) -> Option<P
 /// is reported and skipped — a refusal stops that entry, never the run
 /// (Ruling 10).
 pub fn execute(plan: &Plan, probe: &dyn SymlinkProbe) -> Report {
-    let mut lines = Vec::with_capacity(plan.entries.len());
+    let mut lines = Vec::with_capacity(plan.entries.len() + plan.prunes.len());
     let mut refused = false;
     let mut failed = false;
+
+    // Ruling F: the retention sweep goes **first**, before any entry or prune
+    // executes.
+    //
+    // The order is the whole reason it is safe. Backup directories are created
+    // lazily, by the first `copy_atomic` that needs one — nothing pre-creates
+    // `.agrafter-backups/<run_timestamp>/` at the top of a run — so sweeping
+    // before anything writes means the sweep cannot possibly delete a
+    // directory this run is in the middle of filling. Sweeping afterwards
+    // would have to special-case this run's own directory to avoid exactly
+    // that, and a special case is a thing that can be got wrong; an ordering
+    // is not. `plan_target_retention` still counts this run's prospective
+    // directory toward the limit, so "keep 10" means 10 including it.
+    for sweep in &plan.retention {
+        for removal in &sweep.removals {
+            let body = match remove_backup_dir(removal) {
+                Ok(()) => format!("pruned backup: {}", dir_name(removal)),
+                Err(e) => {
+                    failed = true;
+                    format!(
+                        "failed: could not remove the backup {}: {e}",
+                        removal.display()
+                    )
+                }
+            };
+            lines.push(with_target(&sweep.target, &body));
+        }
+    }
+    for note in &plan.notes {
+        lines.push(with_target(&note.target, &note.message));
+    }
 
     for planned in &plan.entries {
         match &planned.decision {
@@ -659,11 +1340,102 @@ pub fn execute(plan: &Plan, probe: &dyn SymlinkProbe) -> Report {
         }
     }
 
+    // Prunes last: the writes above have already put the current source's
+    // contents in place, so nothing here can remove something a write was
+    // about to create even if the plan somehow contained both.
+    for prune in &plan.prunes {
+        let body = match prune_one(prune) {
+            Ok(Some(reason)) => format!("left in place: {}: {reason}", prune.label),
+            Ok(None) => describe_prune(prune, false),
+            Err(e) => {
+                failed = true;
+                format!("failed: could not prune {}: {e}", prune.label)
+            }
+        };
+        lines.push(with_target(&prune.target, &body));
+    }
+
     Report {
         lines,
         refused,
         failed,
     }
+}
+
+/// Back up and unlink one pruned file, or explain why it was left alone.
+///
+/// `Ok(None)` means it was removed; `Ok(Some(reason))` means it was not, and
+/// why. Neither is a failure: declining to delete something is the safe
+/// outcome, and it does not change the run's exit code. Exit 4 is reserved for
+/// *declared* work this tool refused to do — a stray link sitting inside a
+/// materialized directory is not declared work, and making it fail the run
+/// would turn one editor backup file into a permanently red CI gate.
+///
+/// The plan-time decision is re-checked here rather than trusted, the same
+/// caution the write path already applies: `classify` is asked again
+/// immediately before anything is removed, so an object that has become a link
+/// (or vanished, or turned into a directory) since the plan was computed is
+/// left alone instead of deleted on the strength of a stale snapshot.
+///
+/// The removal itself is `std::fs::remove_file` and nothing else. It is
+/// narrow by construction — it cannot remove a directory, and it cannot
+/// recurse — and it runs only after `classify` has said "not a link" and the
+/// metadata has said "a plain file". Removing a *link* is never this code's
+/// job; that stays exclusively `safelink::remove::remove_link`'s
+/// (Constraint 5), and this path never calls it, because it never removes a
+/// link at all.
+fn prune_one(prune: &PlannedPrune) -> io::Result<Option<String>> {
+    if let PruneDecision::LeftInPlace(reason) = &prune.decision {
+        return Ok(Some(reason.clone()));
+    }
+
+    match classify(&prune.dest) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(Some("it is no longer there".to_string()));
+        }
+        Err(e) => return Err(e),
+        Ok(LinkClass::DirLink | LinkClass::FileLink) => {
+            return Ok(Some(
+                "it became a link after this run was planned; refusing to \
+                 remove it or to delete anything through it"
+                    .to_string(),
+            ));
+        }
+        Ok(LinkClass::NotALink) => {}
+    }
+
+    if !std::fs::symlink_metadata(&prune.dest)?.is_file() {
+        return Ok(Some(
+            "it is no longer a plain file; refusing to remove it".to_string(),
+        ));
+    }
+
+    // Constraint 4: nothing is deleted without its content being preserved
+    // first. A `Remove` always carries a backup path — `backup_path` produced
+    // one for a plain file inside the target root — so its absence means the
+    // plan and the disk disagree, and the safe reading of a disagreement is
+    // "do not delete".
+    let Some(backup) = &prune.backup else {
+        return Ok(Some(
+            "no backup location could be computed for it, and nothing is \
+             removed without one"
+                .to_string(),
+        ));
+    };
+    safelink::copy::copy_atomic(&prune.dest, backup).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "could not back up {} to {}: {e} -- refusing to remove it \
+                 without a backup",
+                prune.dest.display(),
+                backup.display()
+            ),
+        )
+    })?;
+
+    std::fs::remove_file(&prune.dest)?;
+    Ok(None)
 }
 
 /// Back up, clear the way, and materialize one entry — in that order.
@@ -731,10 +1503,23 @@ fn missing_source_reason(source: &Path) -> String {
 
 /// Prefix a report line with its target name, when there is one.
 fn prefixed(planned: &PlannedEntry, body: &str) -> String {
-    match &planned.target {
+    with_target(&planned.target, body)
+}
+
+fn with_target(target: &Option<String>, body: &str) -> String {
+    match target {
         Some(target) => format!("{target}: {body}"),
         None => body.to_string(),
     }
+}
+
+/// A backup directory's own name, for reporting. The full path is long,
+/// repetitive across a run's lines, and adds nothing the target prefix and the
+/// timestamp do not already say.
+fn dir_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// The parenthetical that names where a replaced file's content went.
