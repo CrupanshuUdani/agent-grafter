@@ -795,11 +795,16 @@ fn a_file_deleted_from_the_source_is_backed_up_and_then_removed_from_dest() {
         "a still-declared sibling must survive"
     );
 
+    // Two separate `.join()` calls, not one `.join("modes/gone.md")`: a
+    // single call pushes its argument as one opaque segment, preserving
+    // whatever separator character it was typed with, so it would not match
+    // `backup.display()`'s all-native-separator rendering on Windows.
     let backup = env
         .dest()
         .join(".agrafter-backups")
         .join(&timestamp)
-        .join("modes/gone.md");
+        .join("modes")
+        .join("gone.md");
     assert_eq!(
         fs::read(&backup).unwrap_or_else(|e| panic!("no backup at {}: {e}", backup.display())),
         b"about to be deleted",
