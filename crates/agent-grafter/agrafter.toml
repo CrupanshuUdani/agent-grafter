@@ -14,7 +14,7 @@ source = "."
 # agent must keep working without it.
 copy = [
     "AGENTS.md",
-    "config.md",
+    "CLAUDE.md",
     "modes/",
     "skills/",
 ]
@@ -24,8 +24,8 @@ link = [
     "memory/",
 ]
 
-[targets.aria]
-dest = "~/.aria"
+[targets.claude]
+dest = "~/.claude"
 
 [targets.hermes]
 dest = "~/.hermes"

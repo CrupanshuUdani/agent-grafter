@@ -94,8 +94,8 @@ source = "."
 copy = ["AGENTS.md", "modes/"]
 link = ["memory/"]
 
-[targets.aria]
-dest = "/home/user/.aria"
+[targets.claude]
+dest = "/home/user/.claude"
 
 [targets.hermes]
 dest = "/home/user/.hermes"
@@ -107,8 +107,8 @@ dest = "/home/user/.hermes"
     assert_eq!(m.link, vec!["memory/".to_string()]);
     assert_eq!(m.targets.len(), 2);
     assert_eq!(
-        m.targets["aria"].dest,
-        std::path::PathBuf::from("/home/user/.aria")
+        m.targets["claude"].dest,
+        std::path::PathBuf::from("/home/user/.claude")
     );
 }
 

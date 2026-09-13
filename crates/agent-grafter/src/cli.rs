@@ -117,10 +117,10 @@ pub fn run() -> ExitCode {
 }
 
 /// `apply` (`--dry-run` or not): read the manifest and report what its
-/// declared entries are. S1 does not implement real materialization (that
-/// is S3's job — idempotent apply, backup, prune, all of which Constraint 4
-/// requires before any destination may be touched), so there is nothing to
-/// mutate yet. `--dry-run` prints the same listing phrased as hypothetical
+/// declared entries are. This crate does not implement real materialization
+/// yet (that is S3's job — idempotent apply, backup, prune, all of which
+/// Constraint 4 requires before any destination may be touched), so there is
+/// nothing to mutate yet. `--dry-run` prints the same listing phrased as hypothetical
 /// ("would link: …") and is unconditionally honest: nothing on disk is ever
 /// touched. Plain `apply` prints the listing too, but says so on stderr —
 /// it must never look like it completed a materialization it didn't do.
