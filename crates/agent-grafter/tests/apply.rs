@@ -496,6 +496,105 @@ fn dry_run_computes_the_same_plan_but_changes_nothing() {
     assert!(executed.text().contains("wrote: AGENTS.md"));
 }
 
+// ---------------------------------------------------------------------------
+// Two declared entries resolving to one destination. Running both would let
+// the second entry back up what the first had just written, destroying the
+// only copy of the user's original content — while both lines claim a backup
+// was taken. Refused at plan time, before anything is written.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_entries_claiming_one_destination_are_refused_before_anything_is_written() {
+    let env = Env::new();
+    env.write_source("modes/one.md", b"NEW");
+    // A second file under the same declared directory, claimed by nobody else.
+    env.write_source("modes/two.md", b"uncontested");
+    // `modes` expands to include `modes/one.md`, which is also declared in its
+    // own right — so two planned entries resolve to `dest/modes/one.md`.
+    env.write_manifest("copy = [\"modes\", \"modes/one.md\"]");
+
+    // The user's own file, already sitting at the contested destination.
+    let contested = env.dest().join("modes/one.md");
+    fs::create_dir_all(contested.parent().unwrap()).unwrap();
+    fs::write(&contested, b"USER").unwrap();
+
+    let output = spawn(env.root(), &["apply"]);
+    let text = stdout_of(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "a destination conflict is a refusal.\nstdout:\n{text}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("refused") && text.contains("claimed by more than one declared entry"),
+        "the refusal must explain the conflict: {text}"
+    );
+    assert!(
+        text.contains("\"modes\"") && text.contains("\"modes/one.md\""),
+        "the refusal must name both declared entries so the user knows what to \
+         edit — they share a label, so only the declared names distinguish \
+         them: {text}"
+    );
+
+    // The point of the whole fix: the user's bytes are still exactly there.
+    // Not "eventually correct", not restored from a backup — never touched.
+    assert_eq!(
+        fs::read(&contested).unwrap(),
+        b"USER",
+        "the contested file must not have been overwritten at all"
+    );
+    assert!(
+        !env.dest().join(".agrafter-backups").exists(),
+        "nothing was written, so no backup should have been taken either"
+    );
+
+    // A refusal is still per-entry (Ruling 10): the uncontested sibling from
+    // the same declared directory was processed normally.
+    assert_eq!(
+        fs::read(env.dest().join("modes/two.md")).unwrap(),
+        b"uncontested",
+        "only the conflicting entries are refused, not the whole directory"
+    );
+}
+
+#[test]
+fn a_destination_conflict_is_decided_at_plan_time_not_during_execution() {
+    // The companion to the test above, at the library level: `execute` must
+    // never be handed two `Write` decisions for one path, so the refusal has
+    // to be visible in the plan itself — including under `--dry-run`, which
+    // never calls `execute` at all.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"NEW");
+    let manifest = env.write_manifest("copy = [\"modes\", \"modes/one.md\"]");
+
+    let plan = apply::plan(&manifest, env.root(), &RealProbe);
+
+    let contested = env.dest().join("modes/one.md");
+    let claimants: Vec<&apply::PlannedEntry> = plan
+        .entries
+        .iter()
+        .filter(|p| p.entry.as_ref().is_some_and(|e| e.dest == contested))
+        .collect();
+    assert_eq!(claimants.len(), 2, "the fixture must actually conflict");
+    for planned in claimants {
+        assert!(
+            matches!(planned.decision, apply::Decision::Refused(_)),
+            "every claimant must be refused, not just the later one: {:?}",
+            planned.decision
+        );
+        assert!(
+            planned.backup.is_none(),
+            "a refused entry must not carry a backup path"
+        );
+    }
+    assert!(
+        plan.describe().refused,
+        "dry-run must report the conflict too"
+    );
+}
+
 #[test]
 fn a_missing_source_is_refused_per_entry() {
     let env = Env::new();

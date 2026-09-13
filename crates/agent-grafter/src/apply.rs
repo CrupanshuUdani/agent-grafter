@@ -20,6 +20,7 @@
 //! declared directory's files and comparing bytes to decide whether anything
 //! needs doing at all.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,6 +58,12 @@ pub struct PlannedEntry {
     /// directory-copy expansion — the individual file's path relative to the
     /// source root.
     pub label: String,
+    /// The manifest entry this came from, which for a directory-copy expansion
+    /// is the declared *directory*, not the individual file. Distinct from
+    /// `label` so a destination conflict can name the entries a user would
+    /// have to edit: two entries can share a `label` while being declared
+    /// separately (`copy = ["modes", "modes/one.md"]`).
+    pub declared: String,
     /// The resolved unit of work, or `None` for a refusal reached before any
     /// `Entry` could be built (a missing source, a missing target root).
     pub entry: Option<Entry>,
@@ -76,12 +83,19 @@ pub struct Plan {
     /// directory. Format `YYYYMMDDTHHMMSSZ`: lexically sortable, so listing
     /// the backup directories in name order lists them in time order.
     ///
-    /// Resolution is one second, so it is **not** unique per invocation: two
-    /// `apply` runs inside the same second share a backup directory, and the
-    /// second one's `copy_atomic` overwrites the first one's backup of the
-    /// same file. Relevant to the retention sweep that counts these
-    /// directories — a collision means one fewer recoverable version than the
-    /// directory count suggests.
+    /// Resolution is one second, so it is **not** unique across invocations:
+    /// two `apply` runs inside the same second share a backup directory, and
+    /// the later one's `copy_atomic` overwrites the earlier one's backup of
+    /// the same file. The consequence is bounded — reduced backup *depth*,
+    /// one fewer recoverable version than the directory count suggests, which
+    /// matters to the retention sweep that counts these directories.
+    ///
+    /// The far worse *intra*-run version of this — two entries in one plan
+    /// sharing a destination, where the second would back up what the first
+    /// had just written and destroy the only copy of the original — is
+    /// structurally impossible: `refuse_conflicting_destinations` refuses
+    /// every entry of such a group at plan time, so `execute` never receives
+    /// two writes for one path.
     pub run_timestamp: String,
 }
 
@@ -161,6 +175,7 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
             entries.push(PlannedEntry {
                 target: None,
                 label: label.clone(),
+                declared: label.clone(),
                 entry: None,
                 backup: None,
                 decision: Decision::Refused(
@@ -191,9 +206,78 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
         );
     }
 
+    refuse_conflicting_destinations(&mut entries);
+
     Plan {
         entries,
         run_timestamp,
+    }
+}
+
+/// Refuse every entry whose destination some other entry also claims.
+///
+/// Nothing in the manifest format stops two declared entries from resolving to
+/// the same `dest` — `copy = ["modes", "modes/one.md"]` does it, and so does a
+/// `copy` and a `link` naming the same path. Letting both run is not merely
+/// redundant, it is destructive, and it lies about it:
+///
+///   1. the first entry backs up the user's file and overwrites it;
+///   2. the second entry backs up *what the first just wrote*, overwriting the
+///      backup that held the original;
+///   3. both print `wrote: … (backed up to …)`, while the only copy of the
+///      user's original content no longer exists anywhere.
+///
+/// No execution order fixes this — whichever entry runs second destroys the
+/// other's backup — so it is refused before anything is written, and the whole
+/// conflicting group is refused rather than an arbitrary winner picked.
+///
+/// Run over the finished plan rather than inside `resolve`, because a conflict
+/// is a property of the plan as a whole and not of any single entry. Grouping
+/// is global rather than per-target on purpose: two `[targets.*]` may point at
+/// the same directory, which collides exactly the same way.
+///
+/// Entries already refused for another reason have no resolved `Entry` or no
+/// write pending, and keep their original, more specific explanation.
+fn refuse_conflicting_destinations(entries: &mut [PlannedEntry]) {
+    let mut claims: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    for (index, planned) in entries.iter().enumerate() {
+        if let Some(entry) = &planned.entry {
+            claims.entry(entry.dest.clone()).or_default().push(index);
+        }
+    }
+
+    for (dest, indices) in claims {
+        if indices.len() < 2 {
+            continue;
+        }
+
+        let mut claimants: Vec<String> = indices
+            .iter()
+            .map(|&index| {
+                let planned = &entries[index];
+                match &planned.target {
+                    Some(target) => format!("{:?} (target {target})", planned.declared),
+                    None => format!("{:?}", planned.declared),
+                }
+            })
+            .collect();
+        claimants.sort();
+        claimants.dedup();
+
+        let reason = format!(
+            "the destination {} is claimed by more than one declared entry: \
+             {}. Refusing every entry that claims it: whichever ran second \
+             would back up what the first had just written, destroying the \
+             only copy of the original. Remove the overlap from the manifest.",
+            dest.display(),
+            claimants.join(", ")
+        );
+
+        for index in indices {
+            entries[index].decision = Decision::Refused(reason.clone());
+            // Nothing will be written, so nothing is to be preserved.
+            entries[index].backup = None;
+        }
     }
 }
 
@@ -260,7 +344,7 @@ fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
         dest: ctx.dest.join(name),
         op,
     };
-    resolve(ctx, name, entry)
+    resolve(ctx, name, name, entry)
 }
 
 /// A `copy` entry naming a file is one `FileCopy`; a `copy` entry naming a
@@ -283,7 +367,7 @@ fn plan_copy_entry(ctx: &TargetContext<'_>, name: &str, out: &mut Vec<PlannedEnt
             dest: ctx.dest.join(name),
             op: LinkOp::FileCopy,
         };
-        out.push(resolve(ctx, name, entry));
+        out.push(resolve(ctx, name, name, entry));
         return;
     }
 
@@ -307,7 +391,7 @@ fn plan_copy_entry(ctx: &TargetContext<'_>, name: &str, out: &mut Vec<PlannedEnt
             dest: ctx.dest.join(name).join(&rel),
             op: LinkOp::FileCopy,
         };
-        out.push(resolve(ctx, &label, entry));
+        out.push(resolve(ctx, name, &label, entry));
     }
 }
 
@@ -385,7 +469,7 @@ fn collect_files(dir: &Path, prefix: &Path, out: &mut Vec<PathBuf>) -> io::Resul
 
 /// Turn one resolved `Entry` into a `PlannedEntry` by deciding what the
 /// current state of its destination means.
-fn resolve(ctx: &TargetContext<'_>, label: &str, entry: Entry) -> PlannedEntry {
+fn resolve(ctx: &TargetContext<'_>, declared: &str, label: &str, entry: Entry) -> PlannedEntry {
     let decision = decide(&entry, ctx.probe);
     let backup = if decision == Decision::Write {
         backup_path(&entry.dest, ctx.dest, ctx.run_timestamp)
@@ -395,6 +479,7 @@ fn resolve(ctx: &TargetContext<'_>, label: &str, entry: Entry) -> PlannedEntry {
     PlannedEntry {
         target: Some(ctx.name.to_string()),
         label: label.to_string(),
+        declared: declared.to_string(),
         entry: Some(entry),
         backup,
         decision,
@@ -629,6 +714,7 @@ fn refusal(target_name: &str, label: &str, reason: String) -> PlannedEntry {
     PlannedEntry {
         target: Some(target_name.to_string()),
         label: label.to_string(),
+        declared: label.to_string(),
         entry: None,
         backup: None,
         decision: Decision::Refused(reason),
