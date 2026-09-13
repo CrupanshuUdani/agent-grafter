@@ -1,10 +1,13 @@
 //! Argument parsing, subcommand dispatch, and exit codes.
 //!
-//! `apply` really materializes (Task S3a): it computes a plan via
-//! `crate::apply::plan` and, unless `--dry-run` was passed, executes it.
-//! `status` does read-only drift checking. `doctor`, `unlink`, and `explain`
-//! remain stub subcommands that parse their own args and exit 0. Later tasks
-//! fill those in (S3b: prune and backup retention; S4: `doctor`).
+//! `apply` really materializes (Task S3a) and reconciles (Task S3b): it
+//! computes a plan via `crate::apply::plan` — writes, prunes and the backup
+//! retention sweep, all decided together — and, unless `--dry-run` was passed,
+//! executes it. Prune and retention need no wiring of their own here: they
+//! live in the same `Plan`, so both modes get them by construction rather than
+//! by a second code path remembering to ask. `status` does read-only drift
+//! checking. `doctor`, `unlink`, and `explain` remain stub subcommands that
+//! parse their own args and exit 0; Task S4 fills those in.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
