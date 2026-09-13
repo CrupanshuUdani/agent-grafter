@@ -117,9 +117,12 @@ pub fn run() -> ExitCode {
 
 /// `apply` (`--dry-run` or not): read the manifest and report what its
 /// declared entries are. S1 does not implement real materialization (that
-/// is S3's job — idempotent apply, backup, prune), so there is nothing to
-/// mutate yet; both modes only read and print. Because of that, `--dry-run`
-/// is trivially honest here: nothing on disk is ever touched.
+/// is S3's job — idempotent apply, backup, prune, all of which Constraint 4
+/// requires before any destination may be touched), so there is nothing to
+/// mutate yet. `--dry-run` prints the same listing phrased as hypothetical
+/// ("would link: …") and is unconditionally honest: nothing on disk is ever
+/// touched. Plain `apply` prints the listing too, but says so on stderr —
+/// it must never look like it completed a materialization it didn't do.
 fn apply(args: &ApplyArgs) -> ExitCode {
     let manifest = match manifest::read(&args.manifest) {
         Ok(m) => m,
@@ -129,16 +132,23 @@ fn apply(args: &ApplyArgs) -> ExitCode {
         }
     };
 
-    report(&manifest);
+    report(&manifest, args.dry_run);
+    if !args.dry_run {
+        eprintln!(
+            "note: apply does not materialize anything yet in this version \
+             (real apply lands in a later task); this was a listing only"
+        );
+    }
     ExitCode::Success
 }
 
-fn report(manifest: &Manifest) {
+fn report(manifest: &Manifest, dry_run: bool) {
+    let prefix = if dry_run { "would " } else { "" };
     for name in &manifest.link {
-        println!("link: {name}");
+        println!("{prefix}link: {name}");
     }
     for name in &manifest.copy {
-        println!("copy: {name}");
+        println!("{prefix}copy: {name}");
     }
 }
 

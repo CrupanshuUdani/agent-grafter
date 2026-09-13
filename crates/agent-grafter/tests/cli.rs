@@ -23,6 +23,13 @@ impl TestEnv {
         TestEnv { dir }
     }
 
+    /// Overwrite this env's manifest. Used when the manifest content
+    /// depends on a path only known after the env's temp dir exists (e.g.
+    /// an absolute destination path).
+    fn write_manifest(&self, toml: &str) {
+        fs::write(self.dir.path().join("agent-grafter.toml"), toml).expect("write manifest");
+    }
+
     fn path(&self) -> &Path {
         self.dir.path()
     }
@@ -151,15 +158,51 @@ fn status_exits_3_when_a_declared_link_has_drifted() {
 
 #[test]
 fn status_exits_0_when_the_declared_link_is_already_in_place() {
+    let env = TestEnv::with_manifest("link = [\"memory\"]");
+
     // Build a real directory link with the engine itself (never reimplement
     // link creation here — Global Constraint 5) and point the manifest's
-    // scaffolding `[destinations]` table at it, so `status` finds it in sync.
-    let env = TestEnv::with_manifest("link = [\"memory\"]\n\n[destinations]\nmemory = \"dest\"\n");
-
+    // scaffolding `[destinations]` table at it, so `status` finds it in
+    // sync. Use the absolute path, as a TOML *literal* (single-quoted)
+    // string so a Windows path's backslashes are not read as escapes —
+    // classifying a relative destination against the binary's CWD would be
+    // an untested extra degree of freedom this test doesn't need.
     let target = env.path().join("source");
     fs::create_dir(&target).expect("create source dir");
     let dest = env.path().join("dest");
     safelink::create::create_dir_link(&target, &dest).expect("create link");
 
+    env.write_manifest(&format!(
+        "link = [\"memory\"]\n\n[destinations]\nmemory = '{}'\n",
+        dest.display()
+    ));
+
     env.run(&["status"]).assert_exit_code(0);
+}
+
+#[test]
+fn plain_apply_does_not_claim_to_have_completed_a_materialization() {
+    // S1 does not implement real materialization (that's S3's job), so
+    // plain `apply` must not print output indistinguishable from a
+    // completed apply, and must not touch the filesystem either — there is
+    // nothing yet that could honestly do so.
+    let env = TestEnv::with_manifest("link = [\"memory\"]");
+    let before = env.snapshot();
+
+    let dry_run_out = env.run(&["apply", "--dry-run"]).stdout();
+    let plain_out = env.run(&["apply"]).assert_success().stdout();
+
+    assert_ne!(
+        dry_run_out, plain_out,
+        "plain apply and --dry-run must not print identical output"
+    );
+    assert!(
+        dry_run_out.contains("would"),
+        "dry-run output should read as hypothetical, got: {dry_run_out}"
+    );
+    assert_eq!(
+        before,
+        env.snapshot(),
+        "plain apply must not touch the filesystem either, since S1 has no materialization to do"
+    );
 }
