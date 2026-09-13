@@ -1,0 +1,31 @@
+# agrafter.toml — an illustrative example manifest, of the kind a USER would
+# keep in their own dotfiles repo (not this one). It is not read by any test
+# and describes files that do not exist in this crate; see
+# `crates/agent-grafter/tests/manifest.rs` and `src/manifest.rs` for the
+# format's real specification and refusals. Note this file's own name is
+# distinct from the CLI's actual default manifest filename
+# (`agent-grafter.toml`, set by `DEFAULT_MANIFEST` in `src/cli.rs`).
+#
+# In a real user manifest, the source of truth lives here, relative to this
+# file.
+source = "."
+
+# Authored config: copied, because the source volume may be unmounted and the
+# agent must keep working without it.
+copy = [
+    "AGENTS.md",
+    "config.md",
+    "modes/",
+    "skills/",
+]
+
+# Live agent-generated state: linked, so both systems read and write one copy.
+link = [
+    "memory/",
+]
+
+[targets.aria]
+dest = "~/.aria"
+
+[targets.hermes]
+dest = "~/.hermes"
