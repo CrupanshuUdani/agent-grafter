@@ -1,0 +1,165 @@
+//! Black-box CLI tests: spawn the built `agent-grafter` binary and observe
+//! its exit code, stdout, and effect (or lack of one) on the filesystem.
+//!
+//! `TestEnv` below is test infrastructure only, not production code.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+/// A temp-directory sandbox with a manifest file (`agent-grafter.toml`,
+/// the CLI's default) already written, that the binary under test is run
+/// inside of.
+struct TestEnv {
+    dir: tempfile::TempDir,
+}
+
+impl TestEnv {
+    /// Create a temp dir and write `toml` as its manifest.
+    fn with_manifest(toml: &str) -> Self {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        fs::write(dir.path().join("agent-grafter.toml"), toml).expect("write manifest");
+        TestEnv { dir }
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// A deterministic snapshot of the temp dir's file tree: relative path,
+    /// entry kind, and (for files) content — enough to prove `--dry-run`
+    /// changed nothing. Deliberately excludes timestamps, which would make
+    /// the equality assertion flaky for reasons unrelated to dry-run.
+    fn snapshot(&self) -> Snapshot {
+        let mut entries = BTreeMap::new();
+        walk(self.dir.path(), self.dir.path(), &mut entries);
+        Snapshot(entries)
+    }
+
+    /// Run the built `agent-grafter` binary with `args`, inside this env's
+    /// temp dir, and capture the result.
+    fn run(&self, args: &[&str]) -> RunResult {
+        let output = Command::new(env!("CARGO_BIN_EXE_agent-grafter"))
+            .args(args)
+            .current_dir(self.dir.path())
+            .output()
+            .expect("spawn agent-grafter");
+        RunResult { output }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Snapshot(BTreeMap<PathBuf, EntryKind>);
+
+#[derive(Debug, PartialEq, Eq)]
+enum EntryKind {
+    File(Vec<u8>),
+    Dir,
+    Symlink(PathBuf),
+}
+
+fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, EntryKind>) {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .expect("read_dir")
+        .map(|e| e.expect("dir entry"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let rel = path.strip_prefix(root).expect("under root").to_path_buf();
+        let meta = fs::symlink_metadata(&path).expect("symlink_metadata");
+
+        let kind = if meta.file_type().is_symlink() {
+            EntryKind::Symlink(fs::read_link(&path).unwrap_or_default())
+        } else if meta.is_dir() {
+            walk(root, &path, out);
+            EntryKind::Dir
+        } else {
+            EntryKind::File(fs::read(&path).unwrap_or_default())
+        };
+        out.insert(rel, kind);
+    }
+}
+
+struct RunResult {
+    output: Output,
+}
+
+impl RunResult {
+    fn assert_success(&self) -> &Self {
+        assert!(
+            self.output.status.success(),
+            "expected exit 0, got {:?}\nstdout:\n{}\nstderr:\n{}",
+            self.output.status.code(),
+            self.stdout(),
+            self.stderr()
+        );
+        self
+    }
+
+    fn assert_exit_code(&self, code: i32) -> &Self {
+        assert_eq!(
+            self.output.status.code(),
+            Some(code),
+            "stdout:\n{}\nstderr:\n{}",
+            self.stdout(),
+            self.stderr()
+        );
+        self
+    }
+
+    fn stdout(&self) -> String {
+        String::from_utf8_lossy(&self.output.stdout).into_owned()
+    }
+
+    fn stderr(&self) -> String {
+        String::from_utf8_lossy(&self.output.stderr).into_owned()
+    }
+}
+
+#[test]
+fn dry_run_changes_nothing_on_disk() {
+    let env = TestEnv::with_manifest("link = [\"memory\"]");
+    let before = env.snapshot();
+    env.run(&["apply", "--dry-run"]).assert_success();
+    assert_eq!(
+        before,
+        env.snapshot(),
+        "--dry-run must not touch the filesystem"
+    );
+}
+
+#[test]
+fn dry_run_still_reports_the_work_it_would_do() {
+    let env = TestEnv::with_manifest("link = [\"memory\"]");
+    let out = env.run(&["apply", "--dry-run"]).stdout();
+    assert!(
+        out.contains("memory"),
+        "dry-run must name what it would act on"
+    );
+}
+
+#[test]
+fn status_exits_3_when_a_declared_link_has_drifted() {
+    // No `[destinations]` entry for "memory" at all, and even if there were,
+    // nothing exists at it — either way this is drift.
+    let env = TestEnv::with_manifest("link = [\"memory\"]");
+    env.run(&["status"]).assert_exit_code(3);
+}
+
+#[test]
+fn status_exits_0_when_the_declared_link_is_already_in_place() {
+    // Build a real directory link with the engine itself (never reimplement
+    // link creation here — Global Constraint 5) and point the manifest's
+    // scaffolding `[destinations]` table at it, so `status` finds it in sync.
+    let env = TestEnv::with_manifest("link = [\"memory\"]\n\n[destinations]\nmemory = \"dest\"\n");
+
+    let target = env.path().join("source");
+    fs::create_dir(&target).expect("create source dir");
+    let dest = env.path().join("dest");
+    safelink::create::create_dir_link(&target, &dest).expect("create link");
+
+    env.run(&["status"]).assert_exit_code(0);
+}
