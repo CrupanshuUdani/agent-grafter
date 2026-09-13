@@ -1,12 +1,13 @@
 //! Argument parsing, subcommand dispatch, and exit codes.
 //!
-//! S1 scope only: `apply --dry-run` and `status` have real (read-only)
-//! behavior; `doctor`, `unlink`, and `explain` are stub subcommands that
-//! parse their own args and exit 0. Later tasks fill those in (S3: real
-//! `apply`/`unlink`; S4: `doctor`).
+//! `apply --dry-run` and `status` have real (read-only) behavior against the
+//! hardened `manifest` format (Task S2): both iterate over every declared
+//! `[targets.*]` entry. `doctor`, `unlink`, and `explain` remain stub
+//! subcommands that parse their own args and exit 0. Later tasks fill those
+//! in (S3: real `apply`/`unlink`; S4: `doctor`).
 
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -116,10 +117,10 @@ pub fn run() -> ExitCode {
 }
 
 /// `apply` (`--dry-run` or not): read the manifest and report what its
-/// declared entries are. S1 does not implement real materialization (that
-/// is S3's job — idempotent apply, backup, prune, all of which Constraint 4
-/// requires before any destination may be touched), so there is nothing to
-/// mutate yet. `--dry-run` prints the same listing phrased as hypothetical
+/// declared entries are. This crate does not implement real materialization
+/// yet (that is S3's job — idempotent apply, backup, prune, all of which
+/// Constraint 4 requires before any destination may be touched), so there is
+/// nothing to mutate yet. `--dry-run` prints the same listing phrased as hypothetical
 /// ("would link: …") and is unconditionally honest: nothing on disk is ever
 /// touched. Plain `apply` prints the listing too, but says so on stderr —
 /// it must never look like it completed a materialization it didn't do.
@@ -142,23 +143,48 @@ fn apply(args: &ApplyArgs) -> ExitCode {
     ExitCode::Success
 }
 
+/// Read-only listing of every declared entry, for every declared target.
+/// Target names are sorted for deterministic output; this is still just a
+/// listing (real per-target materialization is Task S3's job), so each line
+/// is prefixed with the target name it would apply to.
+///
+/// A manifest with no `[targets.*]` at all still has declared entries worth
+/// reporting honestly (Constraint 3) — it falls back to an unprefixed
+/// listing rather than silently printing nothing.
 fn report(manifest: &Manifest, dry_run: bool) {
     let prefix = if dry_run { "would " } else { "" };
-    for name in &manifest.link {
-        println!("{prefix}link: {name}");
+    let targets = sorted_target_names(manifest);
+
+    if targets.is_empty() {
+        for name in &manifest.link {
+            println!("{prefix}link: {name}");
+        }
+        for name in &manifest.copy {
+            println!("{prefix}copy: {name}");
+        }
+        return;
     }
-    for name in &manifest.copy {
-        println!("{prefix}copy: {name}");
+
+    for target_name in targets {
+        for name in &manifest.link {
+            println!("{target_name}: {prefix}link: {name}");
+        }
+        for name in &manifest.copy {
+            println!("{target_name}: {prefix}copy: {name}");
+        }
     }
 }
 
-/// `status`: read the manifest, and for each declared `link` entry, use
-/// `safelink::classify` on its destination (this task's own scaffolding
-/// field, `[destinations]` — see `manifest.rs`) to decide whether it is
-/// already correctly materialized. Any of: a missing destination mapping,
-/// a nonexistent destination, or a destination that classifies as
-/// `NotALink`, counts as drift. Exit 3 if any entry drifted, 0 if all are
-/// in sync.
+/// `status`: read the manifest, and for each declared target, resolve each
+/// declared `link` entry's destination as `target.dest.join(entry_name)` and
+/// use `safelink::classify` on it to decide whether it is already correctly
+/// materialized. Either a nonexistent destination or one that classifies as
+/// `NotALink` counts as drift. Exit 3 if any entry drifted (in any target),
+/// 0 if all are in sync.
+///
+/// A manifest that declares `link` entries but no `[targets.*]` at all has
+/// nothing to check them against; that is drift, not a silent "in sync" —
+/// there is no destination anywhere that could be correctly materialized.
 fn status(args: &StatusArgs) -> ExitCode {
     let manifest = match manifest::read(&args.manifest) {
         Ok(m) => m,
@@ -169,14 +195,27 @@ fn status(args: &StatusArgs) -> ExitCode {
     };
 
     let mut drifted = false;
-    for name in &manifest.link {
-        match entry_in_sync(&manifest, name) {
-            Ok(true) => println!("in sync: {name}"),
-            Ok(false) => {
-                println!("drift: {name}");
-                drifted = true;
+    let targets = sorted_target_names(&manifest);
+
+    if targets.is_empty() {
+        for name in &manifest.link {
+            println!("drift: {name} (no targets declared)");
+            drifted = true;
+        }
+    } else {
+        for target_name in targets {
+            let target = &manifest.targets[target_name];
+            for name in &manifest.link {
+                let dest = target.dest.join(name);
+                match entry_in_sync(&dest) {
+                    Ok(true) => println!("{target_name}: in sync: {name}"),
+                    Ok(false) => {
+                        println!("{target_name}: drift: {name}");
+                        drifted = true;
+                    }
+                    Err(()) => return ExitCode::UnexpectedError,
+                }
             }
-            Err(()) => return ExitCode::UnexpectedError,
         }
     }
 
@@ -187,15 +226,17 @@ fn status(args: &StatusArgs) -> ExitCode {
     }
 }
 
+/// Target names in a deterministic (sorted) order, since `Manifest::targets`
+/// is a `HashMap` and iteration order over it is otherwise unspecified.
+fn sorted_target_names(manifest: &Manifest) -> Vec<&String> {
+    let mut names: Vec<&String> = manifest.targets.keys().collect();
+    names.sort();
+    names
+}
+
 /// Returns `Ok(true)` if in sync, `Ok(false)` if drifted, `Err(())` for a
 /// genuine (non-"missing") I/O failure while classifying.
-fn entry_in_sync(manifest: &Manifest, name: &str) -> Result<bool, ()> {
-    let Some(dest) = manifest.destinations.get(name) else {
-        // No destination declared for this entry in this task's scaffold:
-        // there is nothing to check it against, so it cannot be in sync.
-        return Ok(false);
-    };
-
+fn entry_in_sync(dest: &Path) -> Result<bool, ()> {
     match safelink::classify::classify(dest) {
         Ok(safelink::classify::LinkClass::NotALink) => Ok(false),
         Ok(_) => Ok(true),
