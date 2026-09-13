@@ -1,10 +1,10 @@
 //! Argument parsing, subcommand dispatch, and exit codes.
 //!
-//! `apply --dry-run` and `status` have real (read-only) behavior against the
-//! hardened `manifest` format (Task S2): both iterate over every declared
-//! `[targets.*]` entry. `doctor`, `unlink`, and `explain` remain stub
-//! subcommands that parse their own args and exit 0. Later tasks fill those
-//! in (S3: real `apply`/`unlink`; S4: `doctor`).
+//! `apply` really materializes (Task S3a): it computes a plan via
+//! `crate::apply::plan` and, unless `--dry-run` was passed, executes it.
+//! `status` does read-only drift checking. `doctor`, `unlink`, and `explain`
+//! remain stub subcommands that parse their own args and exit 0. Later tasks
+//! fill those in (S3b: prune and backup retention; S4: `doctor`).
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -116,14 +116,15 @@ pub fn run() -> ExitCode {
     }
 }
 
-/// `apply` (`--dry-run` or not): read the manifest and report what its
-/// declared entries are. This crate does not implement real materialization
-/// yet (that is S3's job — idempotent apply, backup, prune, all of which
-/// Constraint 4 requires before any destination may be touched), so there is
-/// nothing to mutate yet. `--dry-run` prints the same listing phrased as hypothetical
-/// ("would link: …") and is unconditionally honest: nothing on disk is ever
-/// touched. Plain `apply` prints the listing too, but says so on stderr —
-/// it must never look like it completed a materialization it didn't do.
+/// `apply` (`--dry-run` or not): compute the full plan, then either print it
+/// or carry it out.
+///
+/// Both modes run the identical decision logic in `crate::apply::plan`
+/// (Constraint 3): `--dry-run` describes the plan and stops, a real run
+/// additionally executes it — backing up anything it is about to overwrite.
+/// Because the exit code is derived from the plan and not from what happened
+/// during execution, `--dry-run` reports the same code a real run would, so a
+/// CI gate on exit 4 behaves the same either way.
 fn apply(args: &ApplyArgs) -> ExitCode {
     let manifest = match manifest::read(&args.manifest) {
         Ok(m) => m,
@@ -133,45 +134,34 @@ fn apply(args: &ApplyArgs) -> ExitCode {
         }
     };
 
-    report(&manifest, args.dry_run);
-    if !args.dry_run {
-        eprintln!(
-            "note: apply does not materialize anything yet in this version \
-             (real apply lands in a later task); this was a listing only"
-        );
-    }
-    ExitCode::Success
-}
+    // The manifest's `source` is documented as relative to the manifest file,
+    // not to wherever the process happens to have been started. `parent()` is
+    // empty for a bare file name like the default `agent-grafter.toml`, which
+    // means the current directory — spelled explicitly rather than relied on
+    // as an accident of `Path::join("")`.
+    let manifest_dir = match args.manifest.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
 
-/// Read-only listing of every declared entry, for every declared target.
-/// Target names are sorted for deterministic output; this is still just a
-/// listing (real per-target materialization is Task S3's job), so each line
-/// is prefixed with the target name it would apply to.
-///
-/// A manifest with no `[targets.*]` at all still has declared entries worth
-/// reporting honestly (Constraint 3) — it falls back to an unprefixed
-/// listing rather than silently printing nothing.
-fn report(manifest: &Manifest, dry_run: bool) {
-    let prefix = if dry_run { "would " } else { "" };
-    let targets = sorted_target_names(manifest);
+    let probe = safelink::capability::RealProbe;
+    let plan = crate::apply::plan(&manifest, &manifest_dir, &probe);
+    let report = if args.dry_run {
+        plan.describe()
+    } else {
+        crate::apply::execute(&plan, &probe)
+    };
 
-    if targets.is_empty() {
-        for name in &manifest.link {
-            println!("{prefix}link: {name}");
-        }
-        for name in &manifest.copy {
-            println!("{prefix}copy: {name}");
-        }
-        return;
+    for line in &report.lines {
+        println!("{line}");
     }
 
-    for target_name in targets {
-        for name in &manifest.link {
-            println!("{target_name}: {prefix}link: {name}");
-        }
-        for name in &manifest.copy {
-            println!("{target_name}: {prefix}copy: {name}");
-        }
+    if report.failed {
+        ExitCode::UnexpectedError
+    } else if report.refused {
+        ExitCode::Refused
+    } else {
+        ExitCode::Success
     }
 }
 

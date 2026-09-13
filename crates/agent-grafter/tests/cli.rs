@@ -34,6 +34,27 @@ impl TestEnv {
         self.dir.path()
     }
 
+    /// Lay out an env that `apply` can really act on: a `source/` directory
+    /// holding a declared `memory/` directory, and a real target root. Since
+    /// Task S3a, `apply` refuses a target root that does not exist and a
+    /// source that does not exist, so a fixture that omits either is only
+    /// ever testing the refusal path.
+    fn with_real_source_and_target(body: &str) -> Self {
+        let env = TestEnv::with_manifest("");
+        fs::create_dir_all(env.path().join("source/memory")).expect("create source");
+        fs::write(env.path().join("source/memory/note.md"), b"remembered").expect("write source");
+        fs::create_dir(env.dest_root()).expect("create dest root");
+        env.write_manifest(&format!(
+            "source = \"source\"\n{body}\n\n[targets.example]\ndest = '{}'\n",
+            env.dest_root().display()
+        ));
+        env
+    }
+
+    fn dest_root(&self) -> PathBuf {
+        self.dir.path().join("dest_root")
+    }
+
     /// A deterministic snapshot of the temp dir's file tree: relative path,
     /// entry kind, and (for files) content — enough to prove `--dry-run`
     /// changed nothing. Deliberately excludes timestamps, which would make
@@ -126,15 +147,12 @@ impl RunResult {
     }
 }
 
-/// A manifest with one declared link entry ("memory") and one target
-/// ("example") whose `dest` is some placeholder that need not exist —
-/// sufficient for `apply`'s read-only reporting, which never touches it.
-const ONE_TARGET_MANIFEST: &str =
-    "link = [\"memory\"]\n\n[targets.example]\ndest = \"placeholder\"\n";
-
 #[test]
 fn dry_run_changes_nothing_on_disk() {
-    let env = TestEnv::with_manifest(ONE_TARGET_MANIFEST);
+    // The fixture has real work to do — a real source and a real target root
+    // — so "nothing changed" is evidence about `--dry-run` and not merely a
+    // restatement of "there was nothing to change".
+    let env = TestEnv::with_real_source_and_target("link = [\"memory\"]");
     let before = env.snapshot();
     env.run(&["apply", "--dry-run"]).assert_success();
     assert_eq!(
@@ -146,7 +164,7 @@ fn dry_run_changes_nothing_on_disk() {
 
 #[test]
 fn dry_run_still_reports_the_work_it_would_do() {
-    let env = TestEnv::with_manifest(ONE_TARGET_MANIFEST);
+    let env = TestEnv::with_real_source_and_target("link = [\"memory\"]");
     let out = env.run(&["apply", "--dry-run"]).stdout();
     assert!(
         out.contains("memory"),
@@ -155,6 +173,10 @@ fn dry_run_still_reports_the_work_it_would_do() {
     assert!(
         out.contains("example"),
         "dry-run must name which target it would act on"
+    );
+    assert!(
+        out.contains("would write"),
+        "dry-run must say what it would do, got: {out}"
     );
 }
 
@@ -218,28 +240,61 @@ fn status_exits_0_when_the_declared_link_is_already_in_place() {
 }
 
 #[test]
-fn plain_apply_does_not_claim_to_have_completed_a_materialization() {
-    // S2 does not implement real materialization (that's S3's job), so
-    // plain `apply` must not print output indistinguishable from a
-    // completed apply, and must not touch the filesystem either — there is
-    // nothing yet that could honestly do so.
-    let env = TestEnv::with_manifest(ONE_TARGET_MANIFEST);
+fn a_dry_run_and_a_real_run_differ_in_verb_and_in_effect() {
+    // Since Task S3a there is real materialization to do, so the honest
+    // distinction is no longer "neither run does anything": it is that both
+    // runs decide the same thing, only one of them acts, and the output says
+    // which happened.
+    let env = TestEnv::with_real_source_and_target("link = [\"memory\"]");
     let before = env.snapshot();
 
-    let dry_run_out = env.run(&["apply", "--dry-run"]).stdout();
-    let plain_out = env.run(&["apply"]).assert_success().stdout();
-
-    assert_ne!(
-        dry_run_out, plain_out,
-        "plain apply and --dry-run must not print identical output"
-    );
+    let dry_run_out = env.run(&["apply", "--dry-run"]).assert_success().stdout();
     assert!(
-        dry_run_out.contains("would"),
+        dry_run_out.contains("would write"),
         "dry-run output should read as hypothetical, got: {dry_run_out}"
     );
     assert_eq!(
         before,
         env.snapshot(),
-        "plain apply must not touch the filesystem either, since S2 has no materialization to do"
+        "--dry-run must not touch the filesystem"
+    );
+
+    let plain_out = env.run(&["apply"]).assert_success().stdout();
+    assert_ne!(
+        dry_run_out, plain_out,
+        "plain apply and --dry-run must not print identical output"
+    );
+    assert!(
+        plain_out.contains("wrote") && !plain_out.contains("would"),
+        "a real run reports what it did, not what it would do: {plain_out}"
+    );
+    assert_ne!(
+        before,
+        env.snapshot(),
+        "a real apply must actually materialize something"
+    );
+    assert_eq!(
+        fs::read(env.dest_root().join("memory/note.md")).unwrap(),
+        b"remembered",
+        "the materialized link must be traversable"
+    );
+}
+
+#[test]
+fn a_dry_run_reports_the_same_exit_code_a_real_run_would() {
+    // A CI gate that runs `apply --dry-run` to detect refusals must see the
+    // same code the real run would produce, or dry-run is hiding the one
+    // thing the gate exists to catch.
+    let env = TestEnv::with_real_source_and_target("link = [\"memory\"]");
+    let occupied = env.dest_root().join("memory");
+    fs::create_dir(&occupied).expect("create occupying dir");
+    fs::write(occupied.join("hand-written.md"), b"mine").expect("write");
+
+    env.run(&["apply", "--dry-run"]).assert_exit_code(4);
+    env.run(&["apply"]).assert_exit_code(4);
+    assert_eq!(
+        fs::read(occupied.join("hand-written.md")).unwrap(),
+        b"mine",
+        "neither run may touch the occupying directory"
     );
 }
