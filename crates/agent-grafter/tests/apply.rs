@@ -1113,6 +1113,106 @@ fn dry_run_reports_the_retention_sweep_without_removing_anything() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_destination_subtree_that_cannot_be_read_prunes_nothing_and_says_so() {
+    // The safe direction is already forced (no candidates from a partial
+    // walk). This is about honesty: a prune pass that quietly did nothing
+    // reads exactly like one that had nothing to do.
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    env.write_source("modes/nested/two.md", b"second mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+
+    env.remove_source("modes/nested/two.md");
+    let locked = env.dest().join("modes/nested");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    if fs::read_dir(&locked).is_ok() {
+        // Running with privileges that ignore the mode bits (root in a
+        // container, typically). The case cannot be produced here, and
+        // asserting anyway would be asserting about the runner, not the code.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let described = apply::plan(&manifest, env.root(), &RealProbe).describe();
+    let text = described.text();
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        text.contains("prune skipped") && text.contains("modes"),
+        "an unreadable destination subtree must be reported, not swallowed: {text}"
+    );
+    assert!(
+        !text.contains("would prune:"),
+        "and nothing may be planned for removal from a walk that failed: {text}"
+    );
+    assert_eq!(
+        fs::read(locked.join("two.md")).unwrap(),
+        b"second mode",
+        "the file is still there, unpruned"
+    );
+}
+
+#[test]
+fn two_targets_sharing_a_root_sweep_its_backups_once_not_once_each() {
+    // Two `[targets.*]` may point at the same directory — the destination
+    // conflict check already exists because of exactly that. They share one
+    // `.agrafter-backups/`, so sweeping it per-target would remove each
+    // expired directory once and then fail removing it again, reporting an
+    // unexpected error over a directory that is already correctly gone.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let toml = format!(
+        "source = \"source\"\ncopy = [\"modes\"]\n\n\
+         [targets.agent-a]\ndest = '{0}'\n\n[targets.agent-b]\ndest = '{0}'\n",
+        env.dest().display()
+    );
+    fs::write(env.manifest_path(), &toml).unwrap();
+    let manifest = manifest::parse(&toml).unwrap();
+
+    let backups = env.dest().join(".agrafter-backups");
+    fs::create_dir_all(&backups).unwrap();
+    for day in 1..=12 {
+        let dir = backups.join(format!("202401{day:02}T000000Z"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("kept.md"), b"backed up").unwrap();
+    }
+
+    let plan = apply::plan(&manifest, env.root(), &RealProbe);
+
+    let planned: Vec<&PathBuf> = plan
+        .retention
+        .iter()
+        .flat_map(|sweep| sweep.removals.iter())
+        .collect();
+    assert_eq!(
+        planned.len(),
+        2,
+        "one shared backup directory must be swept once, not once per \
+         target — a plan that lists a removal twice also prints it twice \
+         under --dry-run: {planned:?}"
+    );
+
+    let out = apply::execute(&plan, &RealProbe);
+    assert!(
+        !out.failed,
+        "removing an already-removed backup must not be reported as an \
+         unexpected error: {}",
+        out.text()
+    );
+    assert_eq!(
+        fs::read_dir(&backups).unwrap().count(),
+        10,
+        "and the sweep must still have done its job"
+    );
+}
+
 #[test]
 fn the_backup_directory_is_never_itself_a_prune_candidate() {
     // `.agrafter-backups` is this tool's bookkeeping, not an entry's content.

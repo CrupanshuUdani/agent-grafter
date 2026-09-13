@@ -138,10 +138,21 @@ pub struct PlannedRetention {
     pub target: Option<String>,
     /// Backup directories to remove, oldest first.
     pub removals: Vec<PathBuf>,
-    /// Why the sweep could not be computed, when it could not be. Reported
-    /// rather than swallowed: a retention sweep that quietly did nothing is
-    /// indistinguishable from one that had nothing to do.
-    pub error: Option<String>,
+}
+
+/// Something the planner could not determine, and declined to guess about.
+///
+/// Every such case in this module chooses the safe direction — do nothing —
+/// and every one of them then says so here. A pass that quietly did nothing is
+/// indistinguishable from one that had nothing to do, and Constraint 3's
+/// honesty requirement covers what a run *could not* decide just as much as
+/// what it decided.
+#[derive(Debug, Clone)]
+pub struct PlanNote {
+    pub target: Option<String>,
+    /// Printed verbatim, in both modes, so it must read as a complete
+    /// sentence and say what the consequence is.
+    pub message: String,
 }
 
 /// Everything one `apply` invocation intends to do.
@@ -150,6 +161,9 @@ pub struct Plan {
     /// Old backup directories to sweep. Executed **first**, before any entry
     /// or prune — see [`execute`].
     pub retention: Vec<PlannedRetention>,
+    /// What the planner could not determine. Reported in both modes; changes
+    /// no exit code, since nothing was attempted and nothing failed.
+    pub notes: Vec<PlanNote>,
     pub entries: Vec<PlannedEntry>,
     /// Files to remove from a declared directory's destination subtree because
     /// the source no longer has them. Always a subset of those subtrees; see
@@ -213,9 +227,9 @@ impl Plan {
                     &format!("would prune backup: {}", dir_name(removal)),
                 ));
             }
-            if let Some(error) = &sweep.error {
-                lines.push(with_target(&sweep.target, error));
-            }
+        }
+        for note in &self.notes {
+            lines.push(with_target(&note.target, &note.message));
         }
 
         for planned in &self.entries {
@@ -294,6 +308,7 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
     let source_root = absolutize(&manifest_dir.join(&manifest.source));
     let mut entries = Vec::new();
     let mut prunes = Vec::new();
+    let mut notes = Vec::new();
 
     let mut target_names: Vec<&String> = manifest.targets.keys().collect();
     target_names.sort();
@@ -317,6 +332,7 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
         }
         return Plan {
             retention: Vec::new(),
+            notes,
             entries,
             prunes,
             run_timestamp,
@@ -336,6 +352,7 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
             },
             &mut entries,
             &mut prunes,
+            &mut notes,
         );
     }
 
@@ -347,66 +364,90 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
     // Last, because whether this run will create a backup directory of its own
     // depends on the two passes above having settled which entries and prunes
     // actually survive.
-    let retention = target_names
-        .iter()
-        .map(|name| {
-            plan_target_retention(
-                name,
-                &manifest.targets[*name].dest,
-                &run_timestamp,
-                &entries,
-                &prunes,
-            )
-        })
-        .collect();
+    //
+    // One sweep per *backup directory*, not per target: two `[targets.*]` may
+    // point at the same root, and they then share one `.agrafter-backups/`.
+    // Sweeping it once per target would list every expired directory twice —
+    // printed twice under `--dry-run`, and on a real run removed once and then
+    // failed on the second attempt, reporting an unexpected error over a
+    // directory that is already correctly gone. It would also split the "is
+    // this run going to write a backup here" question across two targets that
+    // share the answer.
+    let mut swept: HashSet<PathBuf> = HashSet::new();
+    let mut retention = Vec::new();
+    for name in &target_names {
+        if !swept.insert(manifest.targets[*name].dest.join(BACKUP_DIR)) {
+            continue;
+        }
+        plan_target_retention(
+            name,
+            &manifest.targets[*name].dest,
+            &run_timestamp,
+            &entries,
+            &prunes,
+            &mut retention,
+            &mut notes,
+        );
+    }
 
     Plan {
         retention,
+        notes,
         entries,
         prunes,
         run_timestamp,
     }
 }
 
-/// The retention sweep for one target root.
+/// The retention sweep for one backup directory.
 ///
 /// This run's own backup directory is counted toward the limit when — and only
 /// when — something in this run is actually going to write a backup into it.
 /// Counting it unconditionally would retire a real backup a run later than it
 /// should on every no-op run.
+///
+/// "Going to write a backup *into it*" is asked of the planned backup paths
+/// themselves rather than of which target an entry belongs to. Two targets may
+/// share a root and therefore share this directory, so an entry belonging to
+/// the other one still fills it — the path is the thing that decides, and the
+/// target name is only a label for the report.
 fn plan_target_retention(
     target_name: &str,
     target_dest: &Path,
     run_timestamp: &str,
     entries: &[PlannedEntry],
     prunes: &[PlannedPrune],
-) -> PlannedRetention {
-    let mine = |target: &Option<String>| target.as_deref() == Some(target_name);
+    out: &mut Vec<PlannedRetention>,
+    notes: &mut Vec<PlanNote>,
+) {
+    let backups_dir = target_dest.join(BACKUP_DIR);
+    let lands_here = |backup: &Option<PathBuf>| {
+        backup
+            .as_ref()
+            .is_some_and(|path| path.starts_with(&backups_dir))
+    };
     let will_back_up = entries
         .iter()
-        .any(|e| mine(&e.target) && e.decision == Decision::Write && e.backup.is_some())
+        .any(|e| e.decision == Decision::Write && lands_here(&e.backup))
         || prunes
             .iter()
-            .any(|p| mine(&p.target) && p.decision == PruneDecision::Remove && p.backup.is_some());
+            .any(|p| p.decision == PruneDecision::Remove && lands_here(&p.backup));
 
-    let backups_dir = target_dest.join(BACKUP_DIR);
     let prospective = will_back_up.then_some(run_timestamp);
 
     match plan_retention(&backups_dir, KEEP_BACKUPS, prospective) {
-        Ok(removals) => PlannedRetention {
+        Ok(removals) => out.push(PlannedRetention {
             target: Some(target_name.to_string()),
             removals,
-            error: None,
-        },
-        Err(e) => PlannedRetention {
+        }),
+        Err(e) => notes.push(PlanNote {
             target: Some(target_name.to_string()),
-            removals: Vec::new(),
-            error: Some(format!(
+            message: format!(
                 "backup retention skipped: could not read {}: {e}. Old backups \
                  are accumulating there; nothing else about this run is affected.",
                 backups_dir.display()
-            )),
-        },
+            ),
+        }),
     }
 }
 
@@ -523,6 +564,7 @@ fn plan_target(
     ctx: &TargetContext<'_>,
     out: &mut Vec<PlannedEntry>,
     prunes: &mut Vec<PlannedPrune>,
+    notes: &mut Vec<PlanNote>,
 ) {
     // Ruling 8. `MaterializeOptions` defaults to creating missing parents, and
     // its own doc comment warns that a typo in `dest` then silently builds a
@@ -545,7 +587,7 @@ fn plan_target(
         out.push(plan_link_entry(ctx, name));
     }
     for name in &manifest.copy {
-        plan_copy_entry(ctx, name, out, prunes);
+        plan_copy_entry(ctx, name, out, prunes, notes);
     }
 }
 
@@ -600,6 +642,7 @@ fn plan_copy_entry(
     name: &str,
     out: &mut Vec<PlannedEntry>,
     prunes: &mut Vec<PlannedPrune>,
+    notes: &mut Vec<PlanNote>,
 ) {
     let source = ctx.source_root.join(name);
     if !source.exists() {
@@ -643,7 +686,7 @@ fn plan_copy_entry(
         out.push(resolve(ctx, name, &label, entry));
     }
 
-    plan_prunes(ctx, name, &source, prunes);
+    plan_prunes(ctx, name, &source, prunes, notes);
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +792,7 @@ fn plan_prunes(
     declared_dir: &str,
     source_dir: &Path,
     out: &mut Vec<PlannedPrune>,
+    notes: &mut Vec<PlanNote>,
 ) {
     // Re-stated locally rather than inherited from the caller, so this
     // function is safe to read (and to call) on its own terms.
@@ -760,10 +804,21 @@ fn plan_prunes(
     };
 
     let mut found = Vec::new();
-    if collect_dest_subtree(&scope, Path::new(""), 0, &mut found).is_err() {
+    if let Err(e) = collect_dest_subtree(&scope, Path::new(""), 0, &mut found) {
         // A partial destination listing only under-enumerates, so acting on it
         // would be safe — but a run whose report depends on how far a failing
-        // walk happened to get is not one anybody can diff. Nothing, instead.
+        // walk happened to get is not one anybody can diff. Nothing, instead —
+        // and said out loud, because a prune pass that silently did nothing
+        // reads exactly like one that had nothing to do.
+        notes.push(PlanNote {
+            target: Some(ctx.name.to_string()),
+            message: format!(
+                "prune skipped for {declared_dir:?}: could not read {}: {e}. \
+                 Files the source no longer has may still be there; nothing \
+                 was removed.",
+                scope.display()
+            ),
+        });
         return;
     }
 
@@ -1136,9 +1191,9 @@ pub fn execute(plan: &Plan, probe: &dyn SymlinkProbe) -> Report {
             };
             lines.push(with_target(&sweep.target, &body));
         }
-        if let Some(error) = &sweep.error {
-            lines.push(with_target(&sweep.target, error));
-        }
+    }
+    for note in &plan.notes {
+        lines.push(with_target(&note.target, &note.message));
     }
 
     for planned in &plan.entries {
