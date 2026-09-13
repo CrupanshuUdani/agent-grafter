@@ -24,8 +24,22 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
     // `remove_dir`, never `remove_dir_all`: if anything other than an empty
     // directory exists at `link`, something worse has gone wrong and we must
     // not silently delete it.
+    //
+    // One more check is required before removing anything: `remove_dir` does
+    // not care whether a junction's *target* is empty, only whether the
+    // junction entry itself can be unlinked -- which it always can. So if a
+    // concurrent call already finished and turned `link` into a working
+    // junction, `link.is_dir()` is still true, and a naive cleanup here would
+    // delete that concurrent success, not our own half-finished attempt.
+    // `classify` distinguishes the two: only a plain (non-reparse-point)
+    // directory is ours to remove.
     junction::create(&target, link).map_err(|e| {
-        if link.is_dir() {
+        if link.is_dir()
+            && !matches!(
+                crate::classify::classify(link),
+                Ok(crate::classify::LinkClass::DirLink)
+            )
+        {
             let _ = std::fs::remove_dir(link);
         }
         e
