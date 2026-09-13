@@ -19,6 +19,14 @@ use agent_grafter::apply::{self, Report};
 use agent_grafter::manifest::{self, Manifest};
 use safelink::capability::{ForcedProbe, RealProbe, SymlinkProbe};
 
+/// Report lines carry file paths formatted with the platform's own separator
+/// (`Path::join` + `Display`), so a literal like `"modes/one.md"` only matches
+/// the report text on Unix. Use this wherever a test checks report *text* for
+/// a multi-segment path; a plain literal is fine for a single path segment.
+fn sep(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 /// A temp-dir sandbox laid out the way a real install is: a `source/`
 /// directory holding the canonical files, a `dest/` directory standing in for
 /// a target root like an agent's own config directory, and a manifest file
@@ -672,7 +680,7 @@ fn prune_never_touches_anything_at_the_target_root() {
     let out = env.apply(&manifest, &RealProbe);
 
     assert!(
-        out.text().contains("pruned: modes/one.md"),
+        out.text().contains(&sep("pruned: modes/one.md")),
         "the fixture must actually exercise prune, or it proves nothing: {}",
         out.text()
     );
@@ -733,7 +741,7 @@ fn prune_is_scoped_to_each_declared_directorys_own_subtree() {
     let out = env.apply(&manifest, &RealProbe);
 
     assert!(
-        out.text().contains("pruned: modes/nested/deep.md"),
+        out.text().contains(&sep("pruned: modes/nested/deep.md")),
         "the declared subtree's own stale file must still be pruned: {}",
         out.text()
     );
@@ -773,7 +781,7 @@ fn a_file_deleted_from_the_source_is_backed_up_and_then_removed_from_dest() {
 
     assert!(!out.failed, "prune must not fail: {}", out.text());
     assert!(
-        out.text().contains("pruned: modes/gone.md"),
+        out.text().contains(&sep("pruned: modes/gone.md")),
         "the prune must be reported: {}",
         out.text()
     );
@@ -816,7 +824,9 @@ fn dry_run_reports_a_prune_without_performing_it() {
     let described = apply::plan(&manifest, env.root(), &RealProbe).describe();
 
     assert!(
-        described.text().contains("would prune: modes/gone.md"),
+        described
+            .text()
+            .contains(&sep("would prune: modes/gone.md")),
         "dry-run must say what it would prune: {}",
         described.text()
     );
@@ -905,7 +915,7 @@ fn a_link_found_where_a_prune_candidate_was_expected_is_left_in_place() {
         "the directory link itself must survive"
     );
     assert!(
-        out.text().contains("modes/linked-dir"),
+        out.text().contains(&sep("modes/linked-dir")),
         "and it must be reported, not silently skipped: {}",
         out.text()
     );
@@ -979,7 +989,7 @@ fn an_empty_source_directory_still_prunes_what_it_no_longer_holds() {
     let out = env.apply(&manifest, &RealProbe);
 
     assert!(
-        out.text().contains("pruned: modes/one.md"),
+        out.text().contains(&sep("pruned: modes/one.md")),
         "an emptied source directory still prunes: {}",
         out.text()
     );
@@ -1027,7 +1037,7 @@ fn one_run_sweeps_old_backups_and_writes_its_own_without_either_disturbing_the_o
         "the oldest backup must be swept, by name: {text}"
     );
     assert!(
-        text.contains("wrote: modes/one.md") && text.contains("pruned: modes/gone.md"),
+        text.contains(&sep("wrote: modes/one.md")) && text.contains(&sep("pruned: modes/gone.md")),
         "the run's own work must still have happened: {text}"
     );
 
