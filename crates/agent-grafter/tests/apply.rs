@@ -1174,6 +1174,135 @@ fn a_linked_intermediate_component_of_a_declared_path_is_never_walked_through() 
     );
 }
 
+#[test]
+fn a_linked_intermediate_component_of_a_declared_path_is_never_written_through() {
+    // The write-side twin of the prune fixture above. `plan_copy_entry` built
+    // each file's destination via a plain, un-classified `ctx.dest.join(name)
+    // .join(rel)` — resolved by the kernel through whatever `dest/agents`
+    // actually is on disk at write time, so a symlinked intermediate
+    // destination component made `apply` *write* — and file a backup for —
+    // content outside `target.dest`.
+    let env = Env::new();
+    env.write_source("agents/modes/declared.md", b"new content");
+    let manifest = env.write_manifest("copy = [\"agents/modes\"]");
+
+    // Somewhere else entirely — standing in for whatever a stray symlink
+    // happens to point at. Pre-seeded with content of its own so that an
+    // unguarded write would both overwrite it *and* have something to file a
+    // (wrong-location) backup of.
+    let outside = env.root().join("outside");
+    fs::create_dir_all(outside.join("modes")).unwrap();
+    fs::write(outside.join("modes/declared.md"), b"not ours to overwrite").unwrap();
+
+    // A link at the *intermediate* destination component, not at the scope
+    // root.
+    safelink::create::create_dir_link(&outside, &env.dest().join("agents")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert_eq!(
+        fs::read(outside.join("modes/declared.md")).unwrap(),
+        b"not ours to overwrite",
+        "a file outside the target root must never be written to — reached \
+         here only by resolving through a linked intermediate destination \
+         component: {text}"
+    );
+    assert!(
+        !text.contains("backed up to") && !text.contains("would back up to"),
+        "no backup may ever be filed for a path outside target.dest: {text}"
+    );
+    assert!(
+        matches!(
+            safelink::classify::classify(&env.dest().join("agents")),
+            Ok(safelink::classify::LinkClass::DirLink)
+        ),
+        "the link itself must be left alone, neither unlinked nor written \
+         through"
+    );
+    assert!(
+        text.contains("refused"),
+        "the refusal must be reported, not a silent no-op: {text}"
+    );
+    assert!(
+        !env.dest().join(".agrafter-backups").exists(),
+        "nothing inside target.dest should have needed a backup at all: {text}"
+    );
+}
+
+#[test]
+fn a_linked_intermediate_component_of_a_declared_link_entrys_path_is_never_written_through() {
+    // `plan_link_entry` builds its destination the same way `plan_copy_entry`
+    // does, and is a distinct code path from the directory-copy expansion
+    // above: this proves the fix covers it too, not just the `copy` side.
+    let env = Env::new();
+    env.write_source("agents/modes/file.md", b"content");
+    let manifest = env.write_manifest("link = [\"agents/modes\"]");
+
+    let outside = env.root().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+
+    safelink::create::create_dir_link(&outside, &env.dest().join("agents")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert!(
+        !outside.join("modes").exists(),
+        "a directory link must never be created outside the target root — \
+         reached here only by resolving through a linked intermediate \
+         destination component: {text}"
+    );
+    assert!(
+        matches!(
+            safelink::classify::classify(&env.dest().join("agents")),
+            Ok(safelink::classify::LinkClass::DirLink)
+        ),
+        "the link itself must be left alone, neither unlinked nor written \
+         through"
+    );
+    assert!(
+        text.contains("refused"),
+        "the refusal must be reported, not a silent no-op: {text}"
+    );
+}
+
+#[test]
+fn a_linked_intermediate_component_of_a_single_file_copy_entry_is_never_written_through() {
+    // The third and last call site the fix has to cover: a `copy` entry
+    // naming a single file (not a directory), which never reaches
+    // `plan_prunes` at all and is planned entirely inside
+    // `plan_copy_entry`'s non-directory branch.
+    let env = Env::new();
+    env.write_source("agents/file.md", b"new content");
+    let manifest = env.write_manifest("copy = [\"agents/file.md\"]");
+
+    let outside = env.root().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("file.md"), b"not ours to overwrite").unwrap();
+
+    safelink::create::create_dir_link(&outside, &env.dest().join("agents")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert_eq!(
+        fs::read(outside.join("file.md")).unwrap(),
+        b"not ours to overwrite",
+        "a file outside the target root must never be written to — reached \
+         here only by resolving through a linked intermediate destination \
+         component: {text}"
+    );
+    assert!(
+        !text.contains("backed up to") && !text.contains("would back up to"),
+        "no backup may ever be filed for a path outside target.dest: {text}"
+    );
+    assert!(
+        text.contains("refused"),
+        "the refusal must be reported, not a silent no-op: {text}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_source_path_that_cannot_be_read_is_not_treated_as_deleted() {

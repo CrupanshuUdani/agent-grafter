@@ -591,6 +591,134 @@ fn plan_target(
     }
 }
 
+/// Walk from `ctx.dest` down through every component of `rel` **except the
+/// last**, classifying each level via `safelink::classify` before descending
+/// — the write-side counterpart of [`prune_scope`]'s component-by-component
+/// walk, generalized to a destination that may not exist yet.
+///
+/// `plan_copy_entry` and `plan_link_entry` used to build a destination with a
+/// single, un-classified `Path::join` chain (`ctx.dest.join(name)`, or
+/// `ctx.dest.join(name).join(rel)` for a directory-copy expansion), the exact
+/// shape [`prune_scope`]'s doc comment explains is unsafe for anything with
+/// more than one path component: the kernel resolves *through* an
+/// intermediate link before `classify` ever sees the final path. A symlinked
+/// `dest/agents` then makes a declared `copy = ["agents/modes"]` entry write —
+/// and get backed up — into whatever `dest/agents` actually points at, which
+/// can be anywhere. This function is what both planners now call before they
+/// build an `Entry`, so no destination is ever resolved without it.
+///
+/// **Why this is a separate function rather than a shared helper with
+/// `prune_scope`, despite the identical-sounding walk:** the two have
+/// different termination rules, and folding them into one function would mean
+/// threading a flag through the one place correctness matters most.
+/// `prune_scope` only ever deals with a destination that must already fully
+/// exist (there is nothing to enumerate otherwise) and refuses on the
+/// *last* component being a link too, since pruning walks *into* that
+/// component. This function's last component is the thing being written,
+/// whose own link-or-not status `decide` already handles correctly (a
+/// wrong-kind link there is fine to replace) — so it deliberately stops
+/// classifying one level early, and treats "nothing here yet" as success
+/// rather than `prune_scope`'s "nothing to reconcile". A shared function
+/// would need a parameter meaning "but not the last one, and NotFound means
+/// something different here", which is worse for the next reader than two
+/// short functions that each say exactly what they check.
+///
+/// One check `prune_scope` has that this does not: it never special-cases a
+/// component named [`BACKUP_DIR`]. Writing *through* a symlinked
+/// `.agrafter-backups` is exactly the same scope escape as any other
+/// symlinked intermediate and is refused here like any other link; writing a
+/// declared entry's *content* into a real, non-link `.agrafter-backups`
+/// directory is a separate, pre-existing question this task was not asked to
+/// change (see `the_backup_directory_is_never_itself_a_prune_candidate`,
+/// which already covers what happens to prune in that case and does not
+/// assert anything about the write side).
+///
+/// Returns the fully joined destination once every intermediate component is
+/// confirmed to be a real, non-link directory, or is confirmed not to exist
+/// yet — nothing can exist beneath a path component that is not there, so the
+/// remainder of `rel` is a clean write into directories `materialize` will
+/// create. Returns `Err` with a user-facing reason when an intermediate
+/// component is a link, is not a plain path component (`..`, an absolute
+/// root, a Windows prefix), or cannot be inspected at all.
+///
+/// The last case also covers an intermediate component that is a real
+/// *file*, not a directory (`classify` succeeds on it — it is not a link —
+/// but the next level's `classify` fails to inspect anything beneath it).
+/// That is a plan-time refusal now, where before this fix it surfaced as a
+/// runtime `failed:` line out of `materialize`'s own missing/blocked-parent
+/// handling. Refusing it here is the more honest answer — the write cannot
+/// possibly succeed, and the planner already refuses equally unwritable
+/// destinations elsewhere (`decide_over_real_data`) — but it is a real,
+/// user-visible change for that one non-symlink shape: what used to fail
+/// during `execute` (exit 1) now stops at `plan` (exit 4).
+fn resolve_scoped_dest(
+    ctx: &TargetContext<'_>,
+    declared: &str,
+    rel: &Path,
+) -> Result<PathBuf, String> {
+    let mut names = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(name) => names.push(name),
+            // Names the same directory; neither descends nor needs checking.
+            Component::CurDir => continue,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "the declared entry {declared:?} contains a path \
+                     component that is not a plain name, so where it lands \
+                     cannot be established without resolving the filesystem; \
+                     nothing was written. Spell it as a plain relative path."
+                ));
+            }
+        }
+    }
+
+    // Split off the last component: its own class is `decide`'s question, not
+    // this walk's. `split_last` returning `None` is unreachable in practice —
+    // every caller passes at least one real component, and
+    // `manifest::validate_entry` already refuses an entry that normalizes to
+    // none — but treated as "nothing to check" rather than assumed away, so a
+    // future caller that got this wrong fails safe instead of panicking.
+    let Some((_last, intermediate)) = names.split_last() else {
+        return Ok(ctx.dest.join(rel));
+    };
+
+    let mut current = ctx.dest.to_path_buf();
+    for name in intermediate {
+        current.push(name);
+
+        // classify() before any metadata question, exactly as `prune_scope`
+        // does and for the same reason: `is_dir()` and `is_symlink()` can
+        // both be true at once, so `is_dir()` alone never answers "is it safe
+        // to write through here" (Spike S1).
+        match classify(&current) {
+            Ok(LinkClass::NotALink) => {}
+            Ok(LinkClass::DirLink | LinkClass::FileLink) => {
+                return Err(format!(
+                    "{} is a link, so writing the declared entry {declared:?} \
+                     would mean resolving through it and possibly outside {}; \
+                     nothing was written.",
+                    current.display(),
+                    ctx.dest.display()
+                ));
+            }
+            // Nothing materialized at this level yet, so nothing beneath it
+            // can exist either: the rest of `rel` is a clean write into
+            // directories `materialize` will create.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ctx.dest.join(rel)),
+            Err(e) => {
+                return Err(format!(
+                    "could not inspect {} while resolving the declared entry \
+                     {declared:?}: {e}; nothing was written.",
+                    current.display()
+                ));
+            }
+        }
+    }
+
+    Ok(ctx.dest.join(rel))
+}
+
 /// A `link` entry maps 1:1 and is never expanded: a directory source becomes
 /// one `DirectoryLink`, a file source one `FileSymlink` (which the engine may
 /// downgrade to a copy at execution time).
@@ -614,16 +742,16 @@ fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
     if !source.exists() {
         return refusal(ctx.name, name, missing_source_reason(&source));
     }
+    let dest = match resolve_scoped_dest(ctx, name, Path::new(name)) {
+        Ok(dest) => dest,
+        Err(reason) => return refusal(ctx.name, name, reason),
+    };
     let op = if source.is_dir() {
         LinkOp::DirectoryLink
     } else {
         LinkOp::FileSymlink
     };
-    let entry = Entry {
-        source,
-        dest: ctx.dest.join(name),
-        op,
-    };
+    let entry = Entry { source, dest, op };
     resolve(ctx, name, name, entry)
 }
 
@@ -651,9 +779,16 @@ fn plan_copy_entry(
     }
 
     if !source.is_dir() {
+        let dest = match resolve_scoped_dest(ctx, name, Path::new(name)) {
+            Ok(dest) => dest,
+            Err(reason) => {
+                out.push(refusal(ctx.name, name, reason));
+                return;
+            }
+        };
         let entry = Entry {
             source,
-            dest: ctx.dest.join(name),
+            dest,
             op: LinkOp::FileCopy,
         };
         out.push(resolve(ctx, name, name, entry));
@@ -677,10 +812,30 @@ fn plan_copy_entry(
     }
 
     for rel in &relative {
-        let label = Path::new(name).join(rel).to_string_lossy().into_owned();
+        let full_rel = Path::new(name).join(rel);
+        let label = full_rel.to_string_lossy().into_owned();
+        // `declared` is `name` (the directory the manifest actually declares),
+        // not `label` (this one expanded file) — the same distinction
+        // `PlannedEntry::declared`'s own doc comment draws, and the reason a
+        // refusal reason must say "edit *this*", which is what the user can
+        // actually act on.
+        let dest = match resolve_scoped_dest(ctx, name, &full_rel) {
+            Ok(dest) => dest,
+            Err(reason) => {
+                out.push(PlannedEntry {
+                    target: Some(ctx.name.to_string()),
+                    label: label.clone(),
+                    declared: name.to_string(),
+                    entry: None,
+                    backup: None,
+                    decision: Decision::Refused(reason),
+                });
+                continue;
+            }
+        };
         let entry = Entry {
             source: source.join(rel),
-            dest: ctx.dest.join(name).join(rel),
+            dest,
             op: LinkOp::FileCopy,
         };
         out.push(resolve(ctx, name, &label, entry));
