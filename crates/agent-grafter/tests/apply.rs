@@ -1571,3 +1571,40 @@ fn the_backup_directory_is_never_itself_a_prune_candidate() {
         "a real backup must survive"
     );
 }
+
+#[test]
+fn a_declared_entry_naming_the_backup_directory_is_refused_not_written() {
+    // A single-component entry has no intermediate component for
+    // `resolve_scoped_dest`'s link/inspection walk to check at all -- so
+    // without a dedicated check, `link = [".agrafter-backups"]` sailed
+    // through as an ordinary, not-yet-existing destination and planned as a
+    // clean `Decision::Write`. At execute time that turns this tool's own
+    // backup directory into a real directory link, and every backup this
+    // run subsequently files for the target resolves through it instead of
+    // landing in `target.dest` -- silently, since the report line for a
+    // successful write and a successful backup both read as perfectly
+    // normal.
+    let env = Env::new();
+    env.write_source(".agrafter-backups/decoy.md", b"declared");
+    let manifest = env.write_manifest("link = [\".agrafter-backups\"]");
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert!(
+        text.contains("refused"),
+        "declaring the backup directory's own name must be refused, not \
+         silently written: {text}"
+    );
+    assert!(
+        !text.contains("wrote"),
+        "nothing should have been written at all: {text}"
+    );
+    assert!(
+        !matches!(
+            safelink::classify::classify(&env.dest().join(".agrafter-backups")),
+            Ok(safelink::classify::LinkClass::DirLink)
+        ),
+        "the backup directory must never become a link to source content"
+    );
+}

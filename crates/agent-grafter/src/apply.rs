@@ -737,15 +737,23 @@ fn plan_target(
 /// something different here", which is worse for the next reader than two
 /// short functions that each say exactly what they check.
 ///
-/// One check `prune_scope` has that this does not: it never special-cases a
-/// component named [`BACKUP_DIR`]. Writing *through* a symlinked
-/// `.agrafter-backups` is exactly the same scope escape as any other
-/// symlinked intermediate and is refused here like any other link; writing a
-/// declared entry's *content* into a real, non-link `.agrafter-backups`
-/// directory is a separate, pre-existing question this task was not asked to
-/// change (see `the_backup_directory_is_never_itself_a_prune_candidate`,
-/// which already covers what happens to prune in that case and does not
-/// assert anything about the write side).
+/// Like `prune_scope`, a component literally named [`BACKUP_DIR`] is refused
+/// outright — but not identically. `prune_scope` treats it as `Scope::Nothing`
+/// (silently nothing to reconcile), which is right for pruning: a stray
+/// `.agrafter-backups` under a declared directory was never this tool's
+/// content to delete either way. The write side has no such symmetry —
+/// declaring `link = [".agrafter-backups"]` or nesting it inside a `copy`
+/// entry's path is *requested* work, and letting it through would mean
+/// `execute` turns this tool's own bookkeeping directory into a real
+/// directory link (or overwrites it as a plain file), after which every
+/// backup this run files for that target resolves through whatever is now
+/// there instead of landing in `target.dest`. So the write side refuses out
+/// loud (`Decision::Refused`, not a silent no-op) — declared work that was
+/// declined must say so (Constraint 3) — and it checks the component at
+/// *every* position, not just the intermediate ones the link/inspection
+/// checks below stop short of: unlike an ordinary path, a not-yet-existing
+/// *final* component named `.agrafter-backups` is exactly as dangerous as an
+/// existing one, since `execute` is what creates it either way.
 ///
 /// Returns the fully joined destination once every intermediate component is
 /// confirmed to be a real, non-link directory, or is confirmed not to exist
@@ -773,7 +781,28 @@ fn resolve_scoped_dest(
     let mut names = Vec::new();
     for component in rel.components() {
         match component {
-            Component::Normal(name) => names.push(name),
+            Component::Normal(name) => {
+                // Checked here, before the intermediate/final split below, so
+                // it applies to *every* component — including the last one.
+                // Unlike the link and inspection checks (which correctly stop
+                // one component short: the final component simply not
+                // existing yet is fine for an ordinary entry), a component
+                // literally named `.agrafter-backups` matters even as the
+                // final, not-yet-existing component: it is this tool's own
+                // bookkeeping directory, and `execute` would turn it into a
+                // real directory link (or a real file) regardless of whether
+                // anything is there yet, after which every subsequent
+                // `backup_path` result for this target resolves through it.
+                if name == BACKUP_DIR {
+                    return Err(format!(
+                        "the declared entry {declared:?} would place {BACKUP_DIR:?} \
+                         inside its own destination path; {BACKUP_DIR} is this \
+                         tool's own backup directory, and nothing may be \
+                         written through or as it. Nothing was written."
+                    ));
+                }
+                names.push(name);
+            }
             // Names the same directory; neither descends nor needs checking.
             Component::CurDir => continue,
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
