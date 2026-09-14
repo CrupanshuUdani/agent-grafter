@@ -816,6 +816,29 @@ fn resolve_scoped_dest(
         }
     }
 
+    // The destination this function returns is always rebuilt from `names` —
+    // the components this walk itself already split out of `rel` — never
+    // from `rel` directly. `rel` is built by callers as a literal string
+    // path (`Path::new(name).join(rel)` in `plan_copy_entry`, where `name` is
+    // the raw, always-forward-slash manifest text), and `Path::join`/
+    // `Path::display` do not normalize separators embedded *inside* an
+    // already-typed component — only the ones a real `.push()` inserts. On
+    // Windows, joining that literal `rel` onto `ctx.dest` again would leave
+    // its embedded `/` characters sitting next to the real `\` the join
+    // adds, producing a destination whose *display text* mixes separators
+    // (the report line, and any refusal message built from it) even though
+    // the `PathBuf` itself is never misinterpreted by anything that walks it
+    // by component. Rebuilding purely from `names`, one real `.push()` per
+    // component, is this project's established fix for that class of bug
+    // (see the two Windows-only path-display fixes already merged for S3b).
+    let joined = |names: &[&std::ffi::OsStr]| {
+        let mut path = ctx.dest.to_path_buf();
+        for name in names {
+            path.push(name);
+        }
+        path
+    };
+
     // Split off the last component: its own class is `decide`'s question, not
     // this walk's. `split_last` returning `None` is unreachable in practice —
     // every caller passes at least one real component, and
@@ -823,7 +846,7 @@ fn resolve_scoped_dest(
     // none — but treated as "nothing to check" rather than assumed away, so a
     // future caller that got this wrong fails safe instead of panicking.
     let Some((_last, intermediate)) = names.split_last() else {
-        return Ok(ctx.dest.join(rel));
+        return Ok(joined(&names));
     };
 
     let mut current = ctx.dest.to_path_buf();
@@ -848,7 +871,7 @@ fn resolve_scoped_dest(
             // Nothing materialized at this level yet, so nothing beneath it
             // can exist either: the rest of `rel` is a clean write into
             // directories `materialize` will create.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ctx.dest.join(rel)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(joined(&names)),
             Err(e) => {
                 return Err(format!(
                     "could not inspect {} while resolving the declared entry \
@@ -859,7 +882,7 @@ fn resolve_scoped_dest(
         }
     }
 
-    Ok(ctx.dest.join(rel))
+    Ok(joined(&names))
 }
 
 /// A `link` entry maps 1:1 and is never expanded: a directory source becomes
@@ -955,7 +978,20 @@ fn plan_copy_entry(
     }
 
     for rel in &relative {
-        let full_rel = Path::new(name).join(rel);
+        // Built component-by-component, not `Path::new(name).join(rel)`: `name`
+        // is the raw, always-forward-slash manifest text, and a literal
+        // `Path::join` onto it never rewrites the separators already embedded
+        // *inside* that literal — only the one it inserts at the join point
+        // uses the native separator. On Windows that leaves `full_rel`'s
+        // display text (and therefore `label`, which is exactly what a
+        // report or refusal line shows) mixing `/` and `\`. Rebuilding from
+        // real components — the same fix applied to `resolve_scoped_dest`'s
+        // own return points below — normalizes every separator, since each
+        // component is appended with a genuine `.push()`.
+        let full_rel: PathBuf = Path::new(name)
+            .components()
+            .chain(rel.components())
+            .collect();
         let label = full_rel.to_string_lossy().into_owned();
         // `declared` is `name` (the directory the manifest actually declares),
         // not `label` (this one expanded file) — the same distinction
