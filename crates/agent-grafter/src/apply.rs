@@ -357,8 +357,12 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
     }
 
     refuse_conflicting_destinations(&mut entries);
-    // After the refusals, so a prune is never planned against a destination
-    // some entry has just been told not to touch either.
+    // After the exact-match refusals above, so a `link` entry that already
+    // lost that conflict is correctly not treated as a link boundary here —
+    // nothing will actually be created at its destination.
+    refuse_entries_nested_under_a_planned_link(&mut entries);
+    // After both refusal passes, so a prune is never planned against a
+    // destination some entry has just been told not to touch either.
     reconcile_prunes(&entries, &mut prunes);
 
     // Last, because whether this run will create a backup directory of its own
@@ -540,6 +544,80 @@ fn refuse_conflicting_destinations(entries: &mut [PlannedEntry]) {
     }
 }
 
+/// Refuse every entry whose destination is nested inside a directory link
+/// *this same run* is about to create.
+///
+/// [`resolve_scoped_dest`] only classifies what already exists on disk at
+/// plan time. A `link` entry that does not exist yet correctly resolves as
+/// "a clean write into a directory `materialize` will create" — for *that*
+/// entry. But nothing about that check sees a *different* entry's planned
+/// destination, and `plan_target` plans (and `execute` then runs) every
+/// target's `link` entries before its `copy` entries. So a manifest
+/// declaring both `link = ["agents"]` and `copy = ["agents/modes"]` plans
+/// each entry independently — `dest/agents` does not exist when the `copy`
+/// entry is resolved, so it is allowed — but by the time the `copy` entry
+/// executes, the `link` entry has already turned `dest/agents` into a real
+/// directory link, and the `copy`'s write resolves *through* it. Two plan
+/// decisions that were each individually correct in isolation add up to
+/// exactly the scope escape [`resolve_scoped_dest`] exists to prevent,
+/// because they were never checked against each other.
+///
+/// Only a [`LinkOp::DirectoryLink`] entry can create this hazard: it is the
+/// only operation that turns a destination into something another entry
+/// could be resolved *through*. A `FileCopy` or `FileSymlink` destination is
+/// a leaf — nothing else in a manifest can have a destination nested beneath
+/// a file, and an attempt to plan one would already fail `resolve_scoped_dest`
+/// with an inspection error once that file exists, not silently resolve
+/// through it. And only a `DirectoryLink` entry with a live [`Decision::Write`]
+/// matters: one that is `Same` already existed at plan time (so every other
+/// entry's own walk already saw it), and one that lost a conflict above will
+/// not actually be created.
+///
+/// Run strictly after [`refuse_conflicting_destinations`], for exactly that
+/// reason: this reads each entry's *final* decision, not the one `resolve`
+/// first computed for it.
+fn refuse_entries_nested_under_a_planned_link(entries: &mut [PlannedEntry]) {
+    let link_roots: Vec<PathBuf> = entries
+        .iter()
+        .filter_map(|planned| {
+            let entry = planned.entry.as_ref()?;
+            (entry.op == LinkOp::DirectoryLink && planned.decision == Decision::Write)
+                .then(|| entry.dest.clone())
+        })
+        .collect();
+
+    if link_roots.is_empty() {
+        return;
+    }
+
+    for planned in entries.iter_mut() {
+        let dest = match &planned.entry {
+            Some(entry) => entry.dest.clone(),
+            None => continue,
+        };
+        for root in &link_roots {
+            // Not `root` itself: that is the link entry creating the
+            // boundary, not something nested inside it.
+            if &dest != root && dest.starts_with(root) {
+                let reason = format!(
+                    "{} is nested inside {}, which this same run is about to \
+                     turn into a directory link; writing to it would resolve \
+                     through that link instead of landing here. Refusing to \
+                     write it. Declare the manifest so no entry's destination \
+                     nests inside another's, or split them across separate \
+                     runs.",
+                    dest.display(),
+                    root.display()
+                );
+                planned.decision = Decision::Refused(reason);
+                // Nothing will be written, so nothing is to be preserved.
+                planned.backup = None;
+                break;
+            }
+        }
+    }
+}
+
 /// The fixed context every entry belonging to one target is planned against.
 ///
 /// Bundled rather than threaded through as six positional parameters: every
@@ -605,7 +683,17 @@ fn plan_target(
 /// `dest/agents` then makes a declared `copy = ["agents/modes"]` entry write —
 /// and get backed up — into whatever `dest/agents` actually points at, which
 /// can be anywhere. This function is what both planners now call before they
-/// build an `Entry`, so no destination is ever resolved without it.
+/// build an `Entry`, so no destination is resolved without being checked
+/// against everything already on disk at plan time.
+///
+/// **What this function cannot see, by itself:** it classifies the
+/// filesystem as it exists *right now*, not what this same run's plan is
+/// about to do to it. A `link` entry that does not exist yet resolves here as
+/// "absent, therefore a clean write" — correctly, in isolation — but if
+/// another entry's destination is nested underneath where that `link` entry
+/// is about to materialize a directory link, the two entries never compare
+/// notes here: closing *that* gap is [`refuse_entries_nested_under_a_planned_link`]'s
+/// job, run once over the whole plan after every entry has been resolved.
 ///
 /// **Why this is a separate function rather than a shared helper with
 /// `prune_scope`, despite the identical-sounding walk:** the two have

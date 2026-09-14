@@ -1303,6 +1303,54 @@ fn a_linked_intermediate_component_of_a_single_file_copy_entry_is_never_written_
     );
 }
 
+#[test]
+fn an_entry_nested_under_a_link_entry_created_by_the_same_run_is_refused() {
+    // `resolve_scoped_dest` only classifies what already exists on disk at
+    // plan time. A `link` entry that does not exist yet resolves as "absent,
+    // therefore a clean write" — correct in isolation — but says nothing
+    // about a *different*, nested entry planned in the same run. `link`
+    // entries execute before `copy` entries for the same target (see
+    // `plan_target`), so by the time the nested `copy` entry would write,
+    // the `link` entry has already turned its own destination into a real
+    // directory link, and the nested write would resolve *through* it —
+    // the same scope escape, reached by two entries agreeing with each
+    // other instead of by a link already on disk.
+    let env = Env::new();
+    env.write_source("agents/modes/file.md", b"content");
+    let manifest = env.write_manifest("link = [\"agents\"]\ncopy = [\"agents/modes\"]");
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert!(
+        text.contains("wrote: agents"),
+        "the link entry itself has nothing nested under *it* and must still \
+         succeed: {text}"
+    );
+    assert!(
+        text.contains(&sep("refused: agents/modes/file.md")),
+        "the entry nested under the about-to-be-created link must be \
+         refused, never silently written through it: {text}"
+    );
+    assert!(
+        text.contains("nested inside"),
+        "the refusal must say why: {text}"
+    );
+    assert!(
+        !text.contains("backed up to") && !text.contains("would back up to"),
+        "nothing was written for the refused entry, so nothing should have \
+         needed a backup: {text}"
+    );
+    assert!(
+        matches!(
+            safelink::classify::classify(&env.dest().join("agents")),
+            Ok(safelink::classify::LinkClass::DirLink)
+        ),
+        "the link entry must actually have materialized, for this to be a \
+         meaningful test of what comes after it"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_source_path_that_cannot_be_read_is_not_treated_as_deleted() {
