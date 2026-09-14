@@ -576,6 +576,32 @@ fn refuse_conflicting_destinations(entries: &mut [PlannedEntry]) {
 /// Run strictly after [`refuse_conflicting_destinations`], for exactly that
 /// reason: this reads each entry's *final* decision, not the one `resolve`
 /// first computed for it.
+///
+/// The nesting test below (`dest.starts_with(root)`) is a **lexical** path
+/// comparison, the same shape of check [`backup_path`]'s doc history warns
+/// against — but not the same failure: `strip_prefix`/`starts_with` is wrong
+/// when the two sides might have reached the filesystem by different routes
+/// (a link resolving one of them somewhere `Path::join` never mentions).
+/// Here both `dest` and every `root` are built the same way, by the same
+/// `resolve_scoped_dest`, as plain `ctx.dest`-rooted joins with no resolution
+/// involved on either side — comparing them lexically is comparing what they
+/// actually are, not standing in for a filesystem question a link could
+/// answer differently.
+///
+/// Collected globally across every target, not per-target: two `[targets.*]`
+/// may share one `dest` root (the retention sweep already accounts for this
+/// — see `plan_target_retention`), and a `link` entry in one refusing a
+/// nested entry declared under the *other* is the correct call, not an
+/// overreach — the directory link still gets created at that shared path
+/// either way, so the nested write would still resolve through it. The
+/// reverse case this widens slightly — a nested entry in a target processed
+/// earlier than the target owning the link, whose own write would in fact
+/// complete before that link exists — is refused anyway. That is a false
+/// positive only in the narrow, deliberately-contrived sense of "it happened
+/// not to collide this run"; the manifest still declares one destination
+/// underneath another that will become a link, and the safe reading of an
+/// ambiguous ordering is the same one `prune_scope` already applies
+/// elsewhere in this file: refuse rather than rely on incidental timing.
 fn refuse_entries_nested_under_a_planned_link(entries: &mut [PlannedEntry]) {
     let link_roots: Vec<PathBuf> = entries
         .iter()
