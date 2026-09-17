@@ -1608,3 +1608,218 @@ fn a_declared_entry_naming_the_backup_directory_is_refused_not_written() {
         "the backup directory must never become a link to source content"
     );
 }
+
+// ===========================================================================
+// Task 2: the backup *root* itself (`target.dest/.agrafter-backups`) was
+// never classified before `apply` read from it (retention) or wrote into it
+// (`backup_path`) -- only the entries *inside* it were. A linked backup root
+// therefore let both the retention sweep and a backed-up write escape
+// `target.dest`, the same severity class as the intermediate-destination-
+// component escape fixed above, one level higher up the path.
+// ===========================================================================
+
+#[test]
+fn a_linked_backup_root_is_never_read_or_deleted_through_for_retention() {
+    // `plan_target_retention` used to hand `target.dest.join(".agrafter-backups")`
+    // straight to `plan_retention`, which calls `std::fs::read_dir` on it with
+    // no classification of that path itself -- only of the entries `read_dir`
+    // turns up (`retention.rs:109`). If the backup root is itself a link,
+    // `read_dir` follows it into whatever it points at, and any real
+    // subdirectory there that happens to be named like a valid timestamp is
+    // treated as this tool's own backup: counted toward `KEEP_BACKUPS`, and
+    // once it ages out, deleted by `remove_backup_dir` -- which classifies
+    // that specific subdirectory (it is a real, unlinked directory) but has
+    // no way to know the path arrived here by resolving through a link one
+    // level up. A linked backup root turns retention into a delete of a real
+    // directory outside `target.dest`, not merely a write into one.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    fs::remove_dir_all(env.dest().join(".agrafter-backups")).ok();
+
+    // A real directory outside `target.dest`, holding eleven directories
+    // shaped like this tool's own backup names -- one more than
+    // `KEEP_BACKUPS` (10), so the oldest is eligible for eviction purely from
+    // what is already on disk, with no dependency on this run also writing a
+    // backup of its own.
+    let elsewhere = env.root().join("elsewhere-backups");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let names: Vec<String> = (1..=11)
+        .map(|day| format!("202401{day:02}T000000Z"))
+        .collect();
+    for name in &names {
+        let dir = elsewhere.join(name);
+        fs::create_dir_all(dir.join("modes")).unwrap();
+        fs::write(dir.join("modes/one.md"), name.as_bytes()).unwrap();
+    }
+
+    // The backup root is a directory link, pointing at that real directory --
+    // not declared anywhere in the manifest (S3c already closed that path);
+    // it becomes one some other way, which is exactly this task's premise.
+    safelink::create::create_dir_link(&elsewhere, &env.dest().join(".agrafter-backups")).unwrap();
+
+    let before: Vec<PathBuf> = fs::read_dir(&elsewhere)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(before.len(), 11, "setup: eleven real directories present");
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert!(
+        elsewhere.join(&names[0]).exists(),
+        "the oldest directory outside target.dest must not be removed just \
+         because it is reachable through a linked backup root: {text}"
+    );
+    for name in &names {
+        assert!(
+            elsewhere.join(name).exists(),
+            "no directory reachable only through the link may be touched: {name}: {text}"
+        );
+    }
+    assert!(
+        !text.contains("pruned backup:") && !text.contains("would prune backup:"),
+        "nothing may be reported as swept when the backup root is a link: {text}"
+    );
+    assert!(
+        text.contains("backup retention skipped") && text.contains(".agrafter-backups"),
+        "the skip must be reported, not silent, and must name the reason: {text}"
+    );
+    assert!(
+        matches!(
+            safelink::classify::classify(&env.dest().join(".agrafter-backups")),
+            Ok(safelink::classify::LinkClass::DirLink)
+        ),
+        "the link itself must be left alone, neither followed nor removed"
+    );
+}
+
+#[test]
+fn a_linked_backup_root_refuses_writes_that_would_need_a_backup() {
+    // The write-side twin: `backup_path` never classified `.agrafter-backups`
+    // itself, only the entry's own destination, so a symlinked backup root let
+    // a replaced file's backup be filed through it -- outside `target.dest`.
+    // Constraint 4 treats "write without the backup it would normally get" as
+    // exactly as forbidden as the unsafe write itself, so the entry must be
+    // refused rather than silently written with no backup.
+    let env = Env::new();
+    env.write_source("file.md", b"new content");
+    let manifest = env.write_manifest("copy = [\"file.md\"]");
+    // Real, different content already at the destination -- a write here
+    // would normally back it up before overwriting it.
+    env.write_dest("file.md", b"old content");
+
+    let outside = env.root().join("outside-backups");
+    fs::create_dir_all(&outside).unwrap();
+    safelink::create::create_dir_link(&outside, &env.dest().join(".agrafter-backups")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert_eq!(
+        fs::read(env.dest().join("file.md")).unwrap(),
+        b"old content",
+        "nothing may be written when the backup it would need cannot be \
+         filed safely: {text}"
+    );
+    assert!(
+        text.contains(&sep("refused: file.md")),
+        "the entry must be refused, not written without the backup it would \
+         normally get: {text}"
+    );
+    assert!(
+        !text.contains("backed up to") && !text.contains("would back up to"),
+        "no backup may ever be filed through a linked backup root: {text}"
+    );
+    assert!(
+        fs::read_dir(&outside).unwrap().next().is_none(),
+        "nothing may land outside target.dest through the link: {text}"
+    );
+    assert!(
+        matches!(
+            safelink::classify::classify(&env.dest().join(".agrafter-backups")),
+            Ok(safelink::classify::LinkClass::DirLink)
+        ),
+        "the link itself must be left alone, neither followed nor replaced"
+    );
+}
+
+#[test]
+fn an_entry_needing_no_backup_is_unaffected_by_a_linked_backup_root() {
+    // The other half of Constraint 4's requirement: only entries that would
+    // actually have gone through `backup_path` are refused. A destination
+    // with nothing real at it yet needs no backup either way, so a linked
+    // backup root must not stop it from being written.
+    let env = Env::new();
+    env.write_source("file.md", b"new content");
+    let manifest = env.write_manifest("copy = [\"file.md\"]");
+
+    let outside = env.root().join("outside-backups");
+    fs::create_dir_all(&outside).unwrap();
+    safelink::create::create_dir_link(&outside, &env.dest().join(".agrafter-backups")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert!(
+        !out.refused,
+        "a write that needs no backup must not be refused just because the \
+         backup root happens to be a link: {text}"
+    );
+    assert_eq!(
+        fs::read(env.dest().join("file.md")).unwrap(),
+        b"new content",
+        "the write must actually have happened: {text}"
+    );
+}
+
+#[test]
+fn a_linked_backup_root_leaves_a_prune_candidate_in_place_rather_than_backing_it_up_outside_target_dest()
+ {
+    // The third caller of `backup_path`, distinct from both tests above:
+    // `plan_prunes` computes a prune candidate's backup the same way `resolve`
+    // computes an entry's, and was found -- empirically, with this exact
+    // fixture -- to have the identical escape before this function was fixed:
+    // the file was pruned from `target.dest` and its only surviving copy was
+    // filed outside it, through the link.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest, &RealProbe);
+    env.remove_source("modes/one.md");
+
+    let outside = env.root().join("outside-backups");
+    fs::create_dir_all(&outside).unwrap();
+    safelink::create::create_dir_link(&outside, &env.dest().join(".agrafter-backups")).unwrap();
+
+    let out = env.apply(&manifest, &RealProbe);
+    let text = out.text();
+
+    assert!(
+        env.dest().join("modes/one.md").exists(),
+        "a file that would need a backup must not be removed when that \
+         backup could only be filed through a linked backup root: {text}"
+    );
+    assert!(
+        fs::read_dir(&outside).unwrap().next().is_none(),
+        "no backup may ever land outside target.dest through the link: {text}"
+    );
+    assert!(
+        text.contains(&sep("left in place: modes/one.md")),
+        "the refusal must be reported, not a silent no-op: {text}"
+    );
+    assert!(
+        !text.contains("pruned: ") && !text.contains("would prune: "),
+        "nothing may be reported as pruned when its backup could not be \
+         safely filed: {text}"
+    );
+    assert!(
+        matches!(
+            safelink::classify::classify(&env.dest().join(".agrafter-backups")),
+            Ok(safelink::classify::LinkClass::DirLink)
+        ),
+        "the link itself must be left alone, neither followed nor removed"
+    );
+}
