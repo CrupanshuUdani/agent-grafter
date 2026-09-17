@@ -257,21 +257,41 @@ fn report_plan_drift(plan: &Plan) -> (Vec<String>, bool) {
 /// reported as drift by [`report_plan_drift`], and double-reporting it here
 /// would say the same thing twice under two different names.
 ///
-/// **The "dangling" outcome below is Windows-reachable far more often than
-/// POSIX-reachable, and that asymmetry is a fact about `classify`, not a gap
-/// in this function.** A POSIX directory symlink whose target has been
-/// removed makes `classify`'s own metadata-follow-through fail, which folds
-/// it into `LinkClass::FileLink` (see `safelink::classify`'s unix impl) —
-/// `is_same()` then already returns `false` for it, `decide()` already
-/// returns `Decision::Write`, and `report_plan_drift` already reports it.
-/// This function never sees it, because it only runs on `Decision::Same`.
-/// A Windows junction is classified *structurally*: `junction::exists`
-/// reports `DirLink` regardless of whether the target it names still
-/// exists, so a dangling junction reaches here as `Decision::Same`, and
-/// `canonicalize(&entry.dest)` is what actually discovers it is dangling.
-/// Verified empirically, not assumed — see this module's own test
-/// `canonicalize_round_trips_through_a_directory_link_and_fails_once_the_target_is_gone`,
-/// per Constraint 8.
+/// **The "dangling" outcome below is a TOCTOU catch, not the path either
+/// platform takes for a link that was already dangling when `plan()`
+/// classified it — that case never reaches this function at all, on either
+/// platform.** An earlier version of this comment claimed a Windows
+/// junction is classified "structurally, regardless of target validity,"
+/// and that a from-the-start-dangling junction therefore reaches here as
+/// `Decision::Same`. A real `windows-latest` CI run (this branch's PR, its
+/// first Windows run) disproved that outright: the equivalent test entry
+/// resolved to `Decision::Write` and was reported by [`report_plan_drift`]'s
+/// generic message, the same outcome POSIX already has for this scenario,
+/// never reaching this function. The likely mechanism (traced by reading
+/// the vendored `junction` crate's source, not re-guessed): its `exists()`
+/// opens with `if !path.exists() { return Ok(false) }`, and `Path::exists`
+/// follows the reparse point, so a dangling junction fails that check
+/// before the structural reparse-tag query ever runs — but the exact
+/// resulting `LinkClass` was not independently pinned by a Windows-side
+/// unit assertion (this dev environment cannot run one), so it is
+/// documented here as the probable cause, not asserted as fact the way
+/// Constraint 8 requires; asserting an unverified specific enum value here
+/// would repeat the exact mistake this correction exists to fix. What is
+/// pinned by a real, already-passing assertion on every platform this runs
+/// on: `is_same()` returns `false` for a from-the-start-dangling directory
+/// link (this module's own test
+/// `canonicalize_round_trips_through_a_directory_link_and_fails_once_the_target_is_gone`
+/// asserts the POSIX `LinkClass::FileLink` fold directly; the Windows side
+/// is pinned only at the integration level, by
+/// `tests/doctor.rs`'s `reports_a_dangling_link_as_drift`, which now
+/// asserts the actually-observed `Decision::Write` wording instead of the
+/// disproven "reaches check 4" claim). What this function's `Err(_)` arm
+/// below actually catches: a link `plan()` classified as `Same` (a real,
+/// resolvable target at plan time) whose target is removed, or otherwise
+/// stops resolving, in the window between `plan()` and this check running
+/// — the same live-reclassification TOCTOU this module's other checks (5,
+/// and check 3's `LeftInPlace` disambiguation) already have, not a new
+/// class of risk.
 fn report_link_targets(plan: &Plan) -> (Vec<String>, bool, bool) {
     let mut lines = Vec::new();
     let mut drifted = false;
@@ -575,16 +595,24 @@ mod tests {
     /// rounds" happened from guessing this instead of testing it).
     ///
     /// Confirms the round-trip while the link is healthy, then confirms —
-    /// and documents — the platform asymmetry once the target is gone: on
-    /// POSIX, `classify` itself already folds a dangling directory symlink
-    /// into `LinkClass::FileLink` (its own metadata-follow-through fails the
-    /// same way `canonicalize` does), so `apply`'s `decide()` never reaches
-    /// `Decision::Same` for it and `report_link_targets` never sees it at
-    /// all. This is not asserted as a POSIX limitation to work around; it is
-    /// the reason check 3 already reports a POSIX dangling link, and check
-    /// 4's own dangling branch is what fires on Windows instead, where
-    /// `junction::exists` classifies structurally regardless of target
-    /// validity.
+    /// on POSIX, with a real assertion, not just prose — what happens once
+    /// the target is gone: `classify` itself already folds a dangling
+    /// directory symlink into `LinkClass::FileLink` (its own
+    /// metadata-follow-through fails the same way `canonicalize` does), so
+    /// `apply`'s `decide()` never reaches `Decision::Same` for it and
+    /// `report_link_targets` never sees it at all — it is check 3
+    /// (`report_plan_drift`) that reports a POSIX dangling link. A real
+    /// `windows-latest` CI run of this branch's PR showed the identical
+    /// outcome on Windows (`Decision::Write`, reported by check 3, not
+    /// check 4) for the same reason `report_link_targets`'s own doc comment
+    /// now explains in full — but this test does not assert a specific
+    /// Windows-side `LinkClass` for it, since that would need a real
+    /// Windows machine or CI run to verify, not this Linux dev environment;
+    /// the Windows-side regression coverage for this behavior lives in
+    /// `tests/doctor.rs`'s `reports_a_dangling_link_as_drift`, at the
+    /// integration level, asserting what CI actually showed rather than
+    /// what seemed like it should be true (Constraint 8's whole point — an
+    /// earlier version of this pair of comments got exactly this wrong).
     #[test]
     fn canonicalize_round_trips_through_a_directory_link_and_fails_once_the_target_is_gone() {
         let tmp = tempfile::tempdir().unwrap();

@@ -182,15 +182,17 @@ fn reports_drift_for_a_link_of_the_wrong_kind() {
 // A dangling link: the on-disk link's recorded target has been removed,
 // while the manifest's *declared* source is untouched and still exists.
 //
-// The two platforms catch this through different checks (see
-// `doctor::report_link_targets`'s own doc comment for why, and
-// `doctor::tests::canonicalize_round_trips_through_a_directory_link_and_fails_once_the_target_is_gone`
-// for the empirical proof): POSIX's `classify` already folds a dangling
-// directory symlink into `FileLink`, so check 3 reports it as a "wrong
-// kind" write; Windows' junction classification is structural and reaches
-// check 4's dedicated dangling message instead. Both must report it as
-// drift with the same remedy, so this test asserts the platform-independent
-// contract and adds a Windows-only assertion for the specific wording.
+// Both platforms catch this the same way, through check 3
+// (`report_plan_drift`), not check 4: POSIX's `classify` already folds a
+// dangling directory symlink into `FileLink`, and a real `windows-latest`
+// CI run of this branch's PR confirmed a dangling junction resolves to
+// `Decision::Write` (check 3's generic message) too, not `Decision::Same`
+// (which would have routed it to check 4's dedicated dangling wording
+// instead) — see `doctor::report_link_targets`'s own doc comment for the
+// full account, including the earlier, disproven assumption this comment
+// used to encode. So this test asserts only the platform-independent
+// contract: drift is reported, with a remedy naming the target and telling
+// the user to re-run `apply`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -220,11 +222,6 @@ fn reports_a_dangling_link_as_drift() {
     assert!(
         text.contains("re-run `apply`"),
         "the remedy must say to re-run apply: {text}"
-    );
-    #[cfg(windows)]
-    assert!(
-        text.contains("dangling"),
-        "Windows reaches check 4's dedicated dangling message: {text}"
     );
 }
 
