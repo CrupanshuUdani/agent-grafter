@@ -8,3 +8,4 @@ pub mod cli;
 pub mod doctor;
 pub mod manifest;
 pub mod retention;
+pub mod winenv;

@@ -13,3 +13,16 @@ safelink = { path = "../safelink" }
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+# Already in Cargo.lock transitively via `safelink`'s `junction` dependency
+# at this same 0.61 line, so promoting it to a direct dependency here adds
+# no new crate to the dependency graph. MIT OR Apache-2.0 (verified against
+# its own Cargo.toml, matching this workspace's Apache-2.0 license.workspace
+# decision) -- see winenv.rs and this task's report for what was checked.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }

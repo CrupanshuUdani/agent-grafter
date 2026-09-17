@@ -11,6 +11,12 @@
 //! (Windows-only elevation and Developer Mode reporting) hooks into this
 //! module by adding another such function and calling it from [`diagnose`],
 //! not by re-reading this file's control flow to find a place to splice in.
+//! That task is [`report_windows_environment`] below: its formatting logic
+//! is cross-platform and unit-tested here via [`crate::winenv::ForcedWindowsFacts`],
+//! but [`diagnose`] only ever calls it inside a `#[cfg(windows)]` block with
+//! the real [`crate::winenv::RealWindowsFacts`] -- on every other platform
+//! this section of the report does not run at all, rather than printing a
+//! stub answer that would mean nothing there.
 //!
 //! **Check 3 is built on [`crate::apply::plan`], not a second, parallel
 //! drift-checker.** A `doctor` that disagreed with what `apply --dry-run`
@@ -80,6 +86,13 @@ pub fn diagnose(
     lines.extend(backup_lines);
     drifted |= backup_drifted;
     failed |= backup_failed;
+
+    // Windows-only, report-only: never folded into `drifted` or `failed`.
+    // See this module's doc comment and `report_windows_environment`'s own
+    // doc comment for why this section is skipped entirely, not stubbed,
+    // on every other platform.
+    #[cfg(windows)]
+    lines.extend(report_windows_environment(&crate::winenv::RealWindowsFacts));
 
     DoctorReport {
         lines,
@@ -401,6 +414,59 @@ fn report_backup_roots(manifest: &Manifest) -> (Vec<String>, bool, bool) {
     (lines, drifted, failed)
 }
 
+/// Check 6 (Windows only): process elevation and Developer Mode.
+///
+/// **Report-only.** Neither fact ever sets `drifted` or `failed` -- see the
+/// call site in [`diagnose`], which does not even look at this function's
+/// return value beyond appending it to `lines`. A standard, non-elevated
+/// user with Developer Mode off is the fully supported, intended case this
+/// entire project exists for (junctions need neither), so this prints the
+/// two facts as a diagnostic courtesy, not a pass/fail verdict -- the
+/// wording below says so explicitly, so "not elevated" or "off" does not
+/// read as something to fix.
+///
+/// Takes `facts` rather than querying the OS itself so this formatting
+/// logic is unit-testable on any platform, including this Linux dev
+/// machine, via [`crate::winenv::ForcedWindowsFacts`] -- see
+/// `crate::winenv`'s own doc comment for the full reasoning, which mirrors
+/// `safelink::capability::SymlinkProbe`.
+///
+/// [`diagnose`]'s only call site is `#[cfg(windows)]`-gated, so on every
+/// other platform this function's sole caller is its own `#[cfg(test)]`
+/// module below -- hence the `allow` here, rather than a warning that would
+/// otherwise fail CI's `-D warnings` clippy gate on non-Windows builds.
+///
+/// Each fact is `Option<bool>` (see [`crate::winenv::WindowsFacts`]'s own
+/// doc comment): `None` gets its own "could not be determined" wording
+/// rather than being folded into `false`, so a query that did not complete
+/// is never printed as the observed fact "not elevated" / "off" it never
+/// actually confirmed. `None` is still report-only, the same as `Some(_)`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn report_windows_environment(facts: &dyn crate::winenv::WindowsFacts) -> Vec<String> {
+    vec![
+        format!(
+            "elevation: {}. Not something to fix either way -- a standard, \
+             non-elevated process is the fully supported, intended case; \
+             junctions need no elevation.",
+            match facts.is_elevated() {
+                Some(true) => "this process is running elevated",
+                Some(false) => "this process is not elevated",
+                None => "could not be determined",
+            }
+        ),
+        format!(
+            "developer mode: {}. Not something to fix either way -- \
+             junctions do not need it; it only affects whether file \
+             symlinks can be created without elevation.",
+            match facts.developer_mode_enabled() {
+                Some(true) => "enabled",
+                Some(false) => "off",
+                None => "could not be determined",
+            }
+        ),
+    ]
+}
+
 /// Target names in a deterministic (sorted) order, for the same reason
 /// `cli::sorted_target_names` sorts them: `Manifest::targets` is a
 /// `HashMap`, whose iteration order is otherwise unspecified, and a report
@@ -421,6 +487,86 @@ mod tests {
             report_tools(),
             "tools: none required (no external process dependencies)"
         );
+    }
+
+    /// Runs on every platform, including this Linux dev machine: it is the
+    /// *formatting* of the two facts into `doctor`'s output under test, not
+    /// the real OS query -- see `crate::winenv`'s doc comment for why that
+    /// split exists. Covers all four boolean combinations so neither fact's
+    /// wording is silently coupled to the other's value.
+    #[test]
+    fn report_windows_environment_names_both_facts_as_report_only() {
+        use crate::winenv::ForcedWindowsFacts;
+
+        let elevated_and_dev_mode = report_windows_environment(&ForcedWindowsFacts {
+            elevated: Some(true),
+            developer_mode: Some(true),
+        });
+        assert!(elevated_and_dev_mode[0].contains("elevation: this process is running elevated"));
+        assert!(elevated_and_dev_mode[1].contains("developer mode: enabled"));
+
+        let neither = report_windows_environment(&ForcedWindowsFacts {
+            elevated: Some(false),
+            developer_mode: Some(false),
+        });
+        assert!(neither[0].contains("elevation: this process is not elevated"));
+        assert!(neither[1].contains("developer mode: off"));
+
+        // Every combination's wording says explicitly that this is not a
+        // pass/fail verdict -- the whole point of the brief's requirement
+        // that a user not read "not elevated" as something to fix.
+        for combo in [
+            (Some(true), Some(false)),
+            (Some(false), Some(true)),
+            (Some(true), Some(true)),
+            (Some(false), Some(false)),
+        ] {
+            let lines = report_windows_environment(&ForcedWindowsFacts {
+                elevated: combo.0,
+                developer_mode: combo.1,
+            });
+            for line in &lines {
+                assert!(
+                    line.contains("Not something to fix"),
+                    "must not read as a health-check verdict: {line}"
+                );
+            }
+        }
+    }
+
+    /// The honesty case the advisor caught in review: a query that did not
+    /// complete must never be printed as the observed fact "not elevated" /
+    /// "off" -- that would be reporting an assumption as a fact, which
+    /// AGENTS.md's Boundaries forbid outright. `None` gets its own distinct
+    /// wording instead, and it must still read as report-only.
+    #[test]
+    fn report_windows_environment_never_reports_unknown_as_a_definite_fact() {
+        use crate::winenv::ForcedWindowsFacts;
+
+        let unknown = report_windows_environment(&ForcedWindowsFacts {
+            elevated: None,
+            developer_mode: None,
+        });
+        assert!(
+            unknown[0].contains("could not be determined")
+                && !unknown[0].contains("not elevated")
+                && !unknown[0].contains("running elevated"),
+            "{}",
+            unknown[0]
+        );
+        assert!(
+            unknown[1].contains("could not be determined")
+                && !unknown[1].contains("developer mode: off")
+                && !unknown[1].contains("developer mode: enabled"),
+            "{}",
+            unknown[1]
+        );
+        for line in &unknown {
+            assert!(
+                line.contains("Not something to fix"),
+                "must not read as a health-check verdict: {line}"
+            );
+        }
     }
 
     /// The empirical probe `report_link_targets`'s comparison logic is built
