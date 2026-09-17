@@ -22,3 +22,6 @@ Cargo.lock.bak
 /.cline/
 CLAUDE.md
 AGENTS.md
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
