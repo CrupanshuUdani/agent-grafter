@@ -1192,6 +1192,22 @@ enum Found {
 /// legitimate twin is deliberately not caught by that: a source directory that
 /// is **present but empty** is a real state a user can declare, and everything
 /// the destination still holds under it genuinely is stale.
+///
+/// Joins `declared_dir` (raw, always-forward-slash manifest text) with `rel`
+/// (already split into real filesystem components by the destination walk
+/// above) purely from components, the same fix already applied to
+/// `resolve_scoped_dest`'s `names`-based rebuild and `plan_copy_entry`'s
+/// `full_rel` (commit `4d150b2`): a literal `Path::join` never rewrites the
+/// separators already embedded *inside* `declared_dir`, only the one it
+/// inserts at the join point, so on Windows the two report sites below would
+/// otherwise display a path mixing `/` and `\`.
+fn declared_label_path(declared_dir: &str, rel: &Path) -> PathBuf {
+    Path::new(declared_dir)
+        .components()
+        .chain(rel.components())
+        .collect()
+}
+
 fn plan_prunes(
     ctx: &TargetContext<'_>,
     declared_dir: &str,
@@ -1258,7 +1274,7 @@ fn plan_prunes(
                     message: format!(
                         "prune skipped for {}: could not tell whether the \
                          source still has it: {e}. It was left in place.",
-                        Path::new(declared_dir).join(&rel).display()
+                        declared_label_path(declared_dir, &rel).display()
                     ),
                 });
                 continue;
@@ -1273,8 +1289,7 @@ fn plan_prunes(
             continue;
         }
 
-        let label = Path::new(declared_dir)
-            .join(&rel)
+        let label = declared_label_path(declared_dir, &rel)
             .to_string_lossy()
             .into_owned();
         let decision = match kind {
