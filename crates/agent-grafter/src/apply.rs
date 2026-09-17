@@ -357,8 +357,12 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
     }
 
     refuse_conflicting_destinations(&mut entries);
-    // After the refusals, so a prune is never planned against a destination
-    // some entry has just been told not to touch either.
+    // After the exact-match refusals above, so a `link` entry that already
+    // lost that conflict is correctly not treated as a link boundary here —
+    // nothing will actually be created at its destination.
+    refuse_entries_nested_under_a_planned_link(&mut entries);
+    // After both refusal passes, so a prune is never planned against a
+    // destination some entry has just been told not to touch either.
     reconcile_prunes(&entries, &mut prunes);
 
     // Last, because whether this run will create a backup directory of its own
@@ -540,6 +544,106 @@ fn refuse_conflicting_destinations(entries: &mut [PlannedEntry]) {
     }
 }
 
+/// Refuse every entry whose destination is nested inside a directory link
+/// *this same run* is about to create.
+///
+/// [`resolve_scoped_dest`] only classifies what already exists on disk at
+/// plan time. A `link` entry that does not exist yet correctly resolves as
+/// "a clean write into a directory `materialize` will create" — for *that*
+/// entry. But nothing about that check sees a *different* entry's planned
+/// destination, and `plan_target` plans (and `execute` then runs) every
+/// target's `link` entries before its `copy` entries. So a manifest
+/// declaring both `link = ["agents"]` and `copy = ["agents/modes"]` plans
+/// each entry independently — `dest/agents` does not exist when the `copy`
+/// entry is resolved, so it is allowed — but by the time the `copy` entry
+/// executes, the `link` entry has already turned `dest/agents` into a real
+/// directory link, and the `copy`'s write resolves *through* it. Two plan
+/// decisions that were each individually correct in isolation add up to
+/// exactly the scope escape [`resolve_scoped_dest`] exists to prevent,
+/// because they were never checked against each other.
+///
+/// Only a [`LinkOp::DirectoryLink`] entry can create this hazard: it is the
+/// only operation that turns a destination into something another entry
+/// could be resolved *through*. A `FileCopy` or `FileSymlink` destination is
+/// a leaf — nothing else in a manifest can have a destination nested beneath
+/// a file, and an attempt to plan one would already fail `resolve_scoped_dest`
+/// with an inspection error once that file exists, not silently resolve
+/// through it. And only a `DirectoryLink` entry with a live [`Decision::Write`]
+/// matters: one that is `Same` already existed at plan time (so every other
+/// entry's own walk already saw it), and one that lost a conflict above will
+/// not actually be created.
+///
+/// Run strictly after [`refuse_conflicting_destinations`], for exactly that
+/// reason: this reads each entry's *final* decision, not the one `resolve`
+/// first computed for it.
+///
+/// The nesting test below (`dest.starts_with(root)`) is a **lexical** path
+/// comparison, the same shape of check [`backup_path`]'s doc history warns
+/// against — but not the same failure: `strip_prefix`/`starts_with` is wrong
+/// when the two sides might have reached the filesystem by different routes
+/// (a link resolving one of them somewhere `Path::join` never mentions).
+/// Here both `dest` and every `root` are built the same way, by the same
+/// `resolve_scoped_dest`, as plain `ctx.dest`-rooted joins with no resolution
+/// involved on either side — comparing them lexically is comparing what they
+/// actually are, not standing in for a filesystem question a link could
+/// answer differently.
+///
+/// Collected globally across every target, not per-target: two `[targets.*]`
+/// may share one `dest` root (the retention sweep already accounts for this
+/// — see `plan_target_retention`), and a `link` entry in one refusing a
+/// nested entry declared under the *other* is the correct call, not an
+/// overreach — the directory link still gets created at that shared path
+/// either way, so the nested write would still resolve through it. The
+/// reverse case this widens slightly — a nested entry in a target processed
+/// earlier than the target owning the link, whose own write would in fact
+/// complete before that link exists — is refused anyway. That is a false
+/// positive only in the narrow, deliberately-contrived sense of "it happened
+/// not to collide this run"; the manifest still declares one destination
+/// underneath another that will become a link, and the safe reading of an
+/// ambiguous ordering is the same one `prune_scope` already applies
+/// elsewhere in this file: refuse rather than rely on incidental timing.
+fn refuse_entries_nested_under_a_planned_link(entries: &mut [PlannedEntry]) {
+    let link_roots: Vec<PathBuf> = entries
+        .iter()
+        .filter_map(|planned| {
+            let entry = planned.entry.as_ref()?;
+            (entry.op == LinkOp::DirectoryLink && planned.decision == Decision::Write)
+                .then(|| entry.dest.clone())
+        })
+        .collect();
+
+    if link_roots.is_empty() {
+        return;
+    }
+
+    for planned in entries.iter_mut() {
+        let dest = match &planned.entry {
+            Some(entry) => entry.dest.clone(),
+            None => continue,
+        };
+        for root in &link_roots {
+            // Not `root` itself: that is the link entry creating the
+            // boundary, not something nested inside it.
+            if &dest != root && dest.starts_with(root) {
+                let reason = format!(
+                    "{} is nested inside {}, which this same run is about to \
+                     turn into a directory link; writing to it would resolve \
+                     through that link instead of landing here. Refusing to \
+                     write it. Declare the manifest so no entry's destination \
+                     nests inside another's, or split them across separate \
+                     runs.",
+                    dest.display(),
+                    root.display()
+                );
+                planned.decision = Decision::Refused(reason);
+                // Nothing will be written, so nothing is to be preserved.
+                planned.backup = None;
+                break;
+            }
+        }
+    }
+}
+
 /// The fixed context every entry belonging to one target is planned against.
 ///
 /// Bundled rather than threaded through as six positional parameters: every
@@ -591,6 +695,196 @@ fn plan_target(
     }
 }
 
+/// Walk from `ctx.dest` down through every component of `rel` **except the
+/// last**, classifying each level via `safelink::classify` before descending
+/// — the write-side counterpart of [`prune_scope`]'s component-by-component
+/// walk, generalized to a destination that may not exist yet.
+///
+/// `plan_copy_entry` and `plan_link_entry` used to build a destination with a
+/// single, un-classified `Path::join` chain (`ctx.dest.join(name)`, or
+/// `ctx.dest.join(name).join(rel)` for a directory-copy expansion), the exact
+/// shape [`prune_scope`]'s doc comment explains is unsafe for anything with
+/// more than one path component: the kernel resolves *through* an
+/// intermediate link before `classify` ever sees the final path. A symlinked
+/// `dest/agents` then makes a declared `copy = ["agents/modes"]` entry write —
+/// and get backed up — into whatever `dest/agents` actually points at, which
+/// can be anywhere. This function is what both planners now call before they
+/// build an `Entry`, so no destination is resolved without being checked
+/// against everything already on disk at plan time.
+///
+/// **What this function cannot see, by itself:** it classifies the
+/// filesystem as it exists *right now*, not what this same run's plan is
+/// about to do to it. A `link` entry that does not exist yet resolves here as
+/// "absent, therefore a clean write" — correctly, in isolation — but if
+/// another entry's destination is nested underneath where that `link` entry
+/// is about to materialize a directory link, the two entries never compare
+/// notes here: closing *that* gap is [`refuse_entries_nested_under_a_planned_link`]'s
+/// job, run once over the whole plan after every entry has been resolved.
+///
+/// **Why this is a separate function rather than a shared helper with
+/// `prune_scope`, despite the identical-sounding walk:** the two have
+/// different termination rules, and folding them into one function would mean
+/// threading a flag through the one place correctness matters most.
+/// `prune_scope` only ever deals with a destination that must already fully
+/// exist (there is nothing to enumerate otherwise) and refuses on the
+/// *last* component being a link too, since pruning walks *into* that
+/// component. This function's last component is the thing being written,
+/// whose own link-or-not status `decide` already handles correctly (a
+/// wrong-kind link there is fine to replace) — so it deliberately stops
+/// classifying one level early, and treats "nothing here yet" as success
+/// rather than `prune_scope`'s "nothing to reconcile". A shared function
+/// would need a parameter meaning "but not the last one, and NotFound means
+/// something different here", which is worse for the next reader than two
+/// short functions that each say exactly what they check.
+///
+/// Like `prune_scope`, a component literally named [`BACKUP_DIR`] is refused
+/// outright — but not identically. `prune_scope` treats it as `Scope::Nothing`
+/// (silently nothing to reconcile), which is right for pruning: a stray
+/// `.agrafter-backups` under a declared directory was never this tool's
+/// content to delete either way. The write side has no such symmetry —
+/// declaring `link = [".agrafter-backups"]` or nesting it inside a `copy`
+/// entry's path is *requested* work, and letting it through would mean
+/// `execute` turns this tool's own bookkeeping directory into a real
+/// directory link (or overwrites it as a plain file), after which every
+/// backup this run files for that target resolves through whatever is now
+/// there instead of landing in `target.dest`. So the write side refuses out
+/// loud (`Decision::Refused`, not a silent no-op) — declared work that was
+/// declined must say so (Constraint 3) — and it checks the component at
+/// *every* position, not just the intermediate ones the link/inspection
+/// checks below stop short of: unlike an ordinary path, a not-yet-existing
+/// *final* component named `.agrafter-backups` is exactly as dangerous as an
+/// existing one, since `execute` is what creates it either way.
+///
+/// Returns the fully joined destination once every intermediate component is
+/// confirmed to be a real, non-link directory, or is confirmed not to exist
+/// yet — nothing can exist beneath a path component that is not there, so the
+/// remainder of `rel` is a clean write into directories `materialize` will
+/// create. Returns `Err` with a user-facing reason when an intermediate
+/// component is a link, is not a plain path component (`..`, an absolute
+/// root, a Windows prefix), or cannot be inspected at all.
+///
+/// The last case also covers an intermediate component that is a real
+/// *file*, not a directory (`classify` succeeds on it — it is not a link —
+/// but the next level's `classify` fails to inspect anything beneath it).
+/// That is a plan-time refusal now, where before this fix it surfaced as a
+/// runtime `failed:` line out of `materialize`'s own missing/blocked-parent
+/// handling. Refusing it here is the more honest answer — the write cannot
+/// possibly succeed, and the planner already refuses equally unwritable
+/// destinations elsewhere (`decide_over_real_data`) — but it is a real,
+/// user-visible change for that one non-symlink shape: what used to fail
+/// during `execute` (exit 1) now stops at `plan` (exit 4).
+fn resolve_scoped_dest(
+    ctx: &TargetContext<'_>,
+    declared: &str,
+    rel: &Path,
+) -> Result<PathBuf, String> {
+    let mut names = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(name) => {
+                // Checked here, before the intermediate/final split below, so
+                // it applies to *every* component — including the last one.
+                // Unlike the link and inspection checks (which correctly stop
+                // one component short: the final component simply not
+                // existing yet is fine for an ordinary entry), a component
+                // literally named `.agrafter-backups` matters even as the
+                // final, not-yet-existing component: it is this tool's own
+                // bookkeeping directory, and `execute` would turn it into a
+                // real directory link (or a real file) regardless of whether
+                // anything is there yet, after which every subsequent
+                // `backup_path` result for this target resolves through it.
+                if name == BACKUP_DIR {
+                    return Err(format!(
+                        "the declared entry {declared:?} would place {BACKUP_DIR:?} \
+                         inside its own destination path; {BACKUP_DIR} is this \
+                         tool's own backup directory, and nothing may be \
+                         written through or as it. Nothing was written."
+                    ));
+                }
+                names.push(name);
+            }
+            // Names the same directory; neither descends nor needs checking.
+            Component::CurDir => continue,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "the declared entry {declared:?} contains a path \
+                     component that is not a plain name, so where it lands \
+                     cannot be established without resolving the filesystem; \
+                     nothing was written. Spell it as a plain relative path."
+                ));
+            }
+        }
+    }
+
+    // The destination this function returns is always rebuilt from `names` —
+    // the components this walk itself already split out of `rel` — never
+    // from `rel` directly. `rel` is built by callers as a literal string
+    // path (`Path::new(name).join(rel)` in `plan_copy_entry`, where `name` is
+    // the raw, always-forward-slash manifest text), and `Path::join`/
+    // `Path::display` do not normalize separators embedded *inside* an
+    // already-typed component — only the ones a real `.push()` inserts. On
+    // Windows, joining that literal `rel` onto `ctx.dest` again would leave
+    // its embedded `/` characters sitting next to the real `\` the join
+    // adds, producing a destination whose *display text* mixes separators
+    // (the report line, and any refusal message built from it) even though
+    // the `PathBuf` itself is never misinterpreted by anything that walks it
+    // by component. Rebuilding purely from `names`, one real `.push()` per
+    // component, is this project's established fix for that class of bug
+    // (see the two Windows-only path-display fixes already merged for S3b).
+    let joined = |names: &[&std::ffi::OsStr]| {
+        let mut path = ctx.dest.to_path_buf();
+        for name in names {
+            path.push(name);
+        }
+        path
+    };
+
+    // Split off the last component: its own class is `decide`'s question, not
+    // this walk's. `split_last` returning `None` is unreachable in practice —
+    // every caller passes at least one real component, and
+    // `manifest::validate_entry` already refuses an entry that normalizes to
+    // none — but treated as "nothing to check" rather than assumed away, so a
+    // future caller that got this wrong fails safe instead of panicking.
+    let Some((_last, intermediate)) = names.split_last() else {
+        return Ok(joined(&names));
+    };
+
+    let mut current = ctx.dest.to_path_buf();
+    for name in intermediate {
+        current.push(name);
+
+        // classify() before any metadata question, exactly as `prune_scope`
+        // does and for the same reason: `is_dir()` and `is_symlink()` can
+        // both be true at once, so `is_dir()` alone never answers "is it safe
+        // to write through here" (Spike S1).
+        match classify(&current) {
+            Ok(LinkClass::NotALink) => {}
+            Ok(LinkClass::DirLink | LinkClass::FileLink) => {
+                return Err(format!(
+                    "{} is a link, so writing the declared entry {declared:?} \
+                     would mean resolving through it and possibly outside {}; \
+                     nothing was written.",
+                    current.display(),
+                    ctx.dest.display()
+                ));
+            }
+            // Nothing materialized at this level yet, so nothing beneath it
+            // can exist either: the rest of `rel` is a clean write into
+            // directories `materialize` will create.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(joined(&names)),
+            Err(e) => {
+                return Err(format!(
+                    "could not inspect {} while resolving the declared entry \
+                     {declared:?}: {e}; nothing was written.",
+                    current.display()
+                ));
+            }
+        }
+    }
+
+    Ok(joined(&names))
+}
+
 /// A `link` entry maps 1:1 and is never expanded: a directory source becomes
 /// one `DirectoryLink`, a file source one `FileSymlink` (which the engine may
 /// downgrade to a copy at execution time).
@@ -614,16 +908,16 @@ fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
     if !source.exists() {
         return refusal(ctx.name, name, missing_source_reason(&source));
     }
+    let dest = match resolve_scoped_dest(ctx, name, Path::new(name)) {
+        Ok(dest) => dest,
+        Err(reason) => return refusal(ctx.name, name, reason),
+    };
     let op = if source.is_dir() {
         LinkOp::DirectoryLink
     } else {
         LinkOp::FileSymlink
     };
-    let entry = Entry {
-        source,
-        dest: ctx.dest.join(name),
-        op,
-    };
+    let entry = Entry { source, dest, op };
     resolve(ctx, name, name, entry)
 }
 
@@ -651,9 +945,16 @@ fn plan_copy_entry(
     }
 
     if !source.is_dir() {
+        let dest = match resolve_scoped_dest(ctx, name, Path::new(name)) {
+            Ok(dest) => dest,
+            Err(reason) => {
+                out.push(refusal(ctx.name, name, reason));
+                return;
+            }
+        };
         let entry = Entry {
             source,
-            dest: ctx.dest.join(name),
+            dest,
             op: LinkOp::FileCopy,
         };
         out.push(resolve(ctx, name, name, entry));
@@ -677,10 +978,43 @@ fn plan_copy_entry(
     }
 
     for rel in &relative {
-        let label = Path::new(name).join(rel).to_string_lossy().into_owned();
+        // Built component-by-component, not `Path::new(name).join(rel)`: `name`
+        // is the raw, always-forward-slash manifest text, and a literal
+        // `Path::join` onto it never rewrites the separators already embedded
+        // *inside* that literal — only the one it inserts at the join point
+        // uses the native separator. On Windows that leaves `full_rel`'s
+        // display text (and therefore `label`, which is exactly what a
+        // report or refusal line shows) mixing `/` and `\`. Rebuilding from
+        // real components — the same fix applied to `resolve_scoped_dest`'s
+        // own return points below — normalizes every separator, since each
+        // component is appended with a genuine `.push()`.
+        let full_rel: PathBuf = Path::new(name)
+            .components()
+            .chain(rel.components())
+            .collect();
+        let label = full_rel.to_string_lossy().into_owned();
+        // `declared` is `name` (the directory the manifest actually declares),
+        // not `label` (this one expanded file) — the same distinction
+        // `PlannedEntry::declared`'s own doc comment draws, and the reason a
+        // refusal reason must say "edit *this*", which is what the user can
+        // actually act on.
+        let dest = match resolve_scoped_dest(ctx, name, &full_rel) {
+            Ok(dest) => dest,
+            Err(reason) => {
+                out.push(PlannedEntry {
+                    target: Some(ctx.name.to_string()),
+                    label: label.clone(),
+                    declared: name.to_string(),
+                    entry: None,
+                    backup: None,
+                    decision: Decision::Refused(reason),
+                });
+                continue;
+            }
+        };
         let entry = Entry {
             source: source.join(rel),
-            dest: ctx.dest.join(name).join(rel),
+            dest,
             op: LinkOp::FileCopy,
         };
         out.push(resolve(ctx, name, &label, entry));
