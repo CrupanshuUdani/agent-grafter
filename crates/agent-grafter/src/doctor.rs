@@ -126,9 +126,21 @@ fn report_tools() -> String {
 /// decision `apply` itself would reach, via [`crate::apply::plan`] — see
 /// this module's own doc comment for why that reuse is the point. A prune
 /// candidate destined for removal (`PruneDecision::Remove`) is drift too: a
-/// stale file the source no longer has. `PruneDecision::LeftInPlace` is not
-/// drift here — it is already a link `apply` refuses to touch, which is a
-/// distinct, deliberate outcome rather than something to fix.
+/// stale file the source no longer has.
+///
+/// `PruneDecision::LeftInPlace` is drift only when its own destination is
+/// *not* itself a link: a link sitting where a prune candidate was expected
+/// is a distinct, deliberate outcome `apply` refuses to touch (Ruling D),
+/// and reporting that as something to fix would be wrong. But that is not
+/// `LeftInPlace`'s only producer any more (Task S4-2): a plain stale file
+/// that `apply` left in place because it could not safely back it up before
+/// removing it — currently, only because the target's own backup root is a
+/// link (see Check 5) — genuinely is drift, with the same remedy Check 5
+/// already gives, and saying nothing about it here would silently drop a
+/// finding `doctor` already has on hand. The two are told apart below by
+/// reclassifying `prune.dest` itself, not by matching `reason`'s text, so a
+/// future third producer of `LeftInPlace` is judged by what is actually on
+/// disk rather than by what words its message happens to use.
 ///
 /// `plan.notes` are printed too, and printed first, matching
 /// [`crate::apply::Plan::describe`]'s own ordering: a note is what the
@@ -174,16 +186,37 @@ fn report_plan_drift(plan: &Plan) -> (Vec<String>, bool) {
     }
 
     for prune in &plan.prunes {
-        if matches!(prune.decision, PruneDecision::Remove) {
-            drifted = true;
-            lines.push(with_target(
-                &prune.target,
-                &format!(
-                    "drift: {} is a stale file the source no longer has; re-run \
-                     `apply` to remove it.",
-                    prune.label
-                ),
-            ));
+        match &prune.decision {
+            PruneDecision::Remove => {
+                drifted = true;
+                lines.push(with_target(
+                    &prune.target,
+                    &format!(
+                        "drift: {} is a stale file the source no longer has; re-run \
+                         `apply` to remove it.",
+                        prune.label
+                    ),
+                ));
+            }
+            PruneDecision::LeftInPlace(reason) => {
+                // A link sitting where a prune candidate was expected (Ruling
+                // D) is deliberate, not drift — `prune.dest` itself classifies
+                // as a link. Anything else left in place is drift: a stale
+                // file the source no longer has that could not be safely
+                // removed, currently only because the target's own backup
+                // root is a link (Task S4-2; see Check 5's own finding on the
+                // same root). `reason` already carries the specific remedy.
+                if !matches!(
+                    classify(&prune.dest),
+                    Ok(LinkClass::DirLink | LinkClass::FileLink)
+                ) {
+                    drifted = true;
+                    lines.push(with_target(
+                        &prune.target,
+                        &format!("drift: {}: {reason}", prune.label),
+                    ));
+                }
+            }
         }
     }
 

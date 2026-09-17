@@ -300,6 +300,76 @@ fn reports_a_linked_backup_root_as_drift() {
 }
 
 // ---------------------------------------------------------------------------
+// Task S4-2 follow-up: `PruneDecision::LeftInPlace` has two producers now,
+// and check 3 must tell them apart rather than treating both as the
+// deliberate, non-drift outcome the original (pre-S4-2) `LeftInPlace` was.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reports_a_stale_file_blocked_by_a_linked_backup_root_as_drift() {
+    // apply (Task S4-2) leaves a stale file in place, rather than pruning
+    // it, when its backup could only be filed through a linked backup root.
+    // That is genuinely something to fix -- unlike the other `LeftInPlace`
+    // producer below -- and check 3 must say so, not silently drop it.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest);
+    fs::remove_file(env.source().join("modes/one.md")).expect("remove source file");
+
+    let outside = env.root().join("outside-backups");
+    fs::create_dir(&outside).expect("create outside dir");
+    safelink::create::create_dir_link(&outside, &env.dest().join(".agrafter-backups"))
+        .expect("create linked backup root");
+
+    let report = env.diagnose(&manifest);
+    let text = report.lines.join("\n");
+
+    assert!(
+        report.drifted,
+        "a stale file that apply could not safely remove must be reported \
+         as drift, not silently dropped: {text}"
+    );
+    assert!(!report.failed, "{text}");
+    assert!(
+        text.contains("modes/one.md") || text.contains("modes\\one.md"),
+        "the specific stale file must be named: {text}"
+    );
+    assert!(
+        text.to_lowercase().contains("remove or rename"),
+        "the remedy must name removing or renaming what occupies the \
+         backup root, the same remedy check 5 gives: {text}"
+    );
+}
+
+#[test]
+fn does_not_report_a_link_found_where_a_prune_candidate_was_expected_as_drift() {
+    // The original `LeftInPlace` producer: a link sitting where a prune
+    // candidate would otherwise be. `apply` deliberately leaves it alone
+    // (Ruling D in `apply.rs`), and this remains a distinct, non-drift
+    // outcome -- the fix above must not widen check 3 to flag this too.
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first mode");
+    let manifest = env.write_manifest("copy = [\"modes\"]");
+    env.apply(&manifest);
+
+    let elsewhere = env.root().join("elsewhere");
+    fs::create_dir(&elsewhere).expect("create elsewhere dir");
+    safelink::create::create_dir_link(&elsewhere, &env.dest().join("modes/linked-dir"))
+        .expect("create link inside the declared directory's destination subtree");
+
+    let report = env.diagnose(&manifest);
+    let text = report.lines.join("\n");
+
+    assert!(
+        !report.drifted,
+        "a link left in place where a prune candidate was expected remains \
+         a deliberate outcome, not drift: {text}"
+    );
+    assert!(!report.failed, "{text}");
+}
+
+// ---------------------------------------------------------------------------
 // CLI-level: a missing manifest exits 2, the same as `apply`/`status`.
 // `cli::doctor` is not `pub`, so this is the one case that needs a process.
 // ---------------------------------------------------------------------------

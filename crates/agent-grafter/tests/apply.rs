@@ -1636,7 +1636,6 @@ fn a_linked_backup_root_is_never_read_or_deleted_through_for_retention() {
     env.write_source("modes/one.md", b"first mode");
     let manifest = env.write_manifest("copy = [\"modes\"]");
     env.apply(&manifest, &RealProbe);
-    fs::remove_dir_all(env.dest().join(".agrafter-backups")).ok();
 
     // A real directory outside `target.dest`, holding eleven directories
     // shaped like this tool's own backup names -- one more than
