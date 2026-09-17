@@ -42,7 +42,7 @@ jobs:
           $vol = $partition | Format-Volume -FileSystem exFAT -NewFileSystemLabel SAFELINK -Confirm:$false
           $letter = ($vol | Get-Volume).DriveLetter
           if (-not $letter) { throw 'no drive letter assigned' }
-          $dir = "${letter}:\"
+          $dir = "${letter}:\\"
           $actualFs = (Get-Volume -DriveLetter $letter).FileSystemType
           if ($actualFs -ne 'exFAT') { throw "expected exFAT, got $actualFs" }
           "SAFELINK_EXFAT_TEST_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -78,7 +78,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Install graft
+        run: npm install -g @nanonets/graft@0.18.0
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Check graft graph is up to date
+        run: graft check
+  blast-radius:
+    name: blast radius
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install graft
+        run: npm install -g @nanonets/graft@0.18.0
+      - name: Blast radius
+        id: blast
+        env:
+          GRAFT_PROVIDER: orcarouter
+        run: |
+          graft blast --base origin/main --format markdown > /tmp/blast.md 2>&1 || true
+          echo "result<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/blast.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Post blast radius
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `${{ steps.blast.outputs.result }}`;
+            if (body && body.trim()) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '### 🔥 Blast radius\n\n' + body
+              });
+            }
