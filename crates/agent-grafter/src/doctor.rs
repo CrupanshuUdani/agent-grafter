@@ -599,7 +599,9 @@ mod tests {
             "canonicalize must resolve a healthy directory link to its target"
         );
 
-        std::fs::remove_dir_all(&target).unwrap();
+        // `remove_dir` (not `remove_dir_all`, forbidden everywhere per
+        // Constraint 6): `target` is the empty directory created above.
+        std::fs::remove_dir(&target).unwrap();
 
         assert!(
             std::fs::canonicalize(&link).is_err(),
