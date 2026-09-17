@@ -6,8 +6,13 @@
 //! executes it. Prune and retention need no wiring of their own here: they
 //! live in the same `Plan`, so both modes get them by construction rather than
 //! by a second code path remembering to ask. `status` does read-only drift
-//! checking. `doctor`, `unlink`, and `explain` remain stub subcommands that
-//! parse their own args and exit 0; Task S4 fills those in.
+//! checking against `link` entries only. `doctor` is also read-only, but wider:
+//! it checks every declared `copy` and `link` entry (by reusing
+//! `crate::apply::plan`, the same decision `apply` itself would reach),
+//! link-target drift `is_same()` cannot see, and each target's backup-root
+//! health — see `crate::doctor` for the full breakdown. `unlink` and `explain`
+//! remain stub subcommands that parse their own args and exit 0; a later task
+//! fills those in.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -59,7 +64,7 @@ enum Command {
     Apply(ApplyArgs),
     /// Report whether declared entries are already correctly in place.
     Status(StatusArgs),
-    /// Diagnose the current install. Stub in S1 (real behavior: S4).
+    /// Diagnose the current install: read-only checks, never a write.
     Doctor(DoctorArgs),
     /// Remove previously materialized entries. Stub in S1 (real behavior: S3).
     Unlink(UnlinkArgs),
@@ -83,7 +88,10 @@ struct StatusArgs {
 }
 
 #[derive(clap::Args)]
-struct DoctorArgs {}
+struct DoctorArgs {
+    #[arg(long, default_value = DEFAULT_MANIFEST)]
+    manifest: PathBuf,
+}
 
 #[derive(clap::Args)]
 struct UnlinkArgs {}
@@ -113,7 +121,7 @@ pub fn run() -> ExitCode {
     match cli.command {
         Command::Apply(args) => apply(&args),
         Command::Status(args) => status(&args),
-        Command::Doctor(_) => ExitCode::Success,
+        Command::Doctor(args) => doctor(&args),
         Command::Unlink(_) => ExitCode::Success,
         Command::Explain(_) => ExitCode::Success,
     }
@@ -137,16 +145,7 @@ fn apply(args: &ApplyArgs) -> ExitCode {
         }
     };
 
-    // The manifest's `source` is documented as relative to the manifest file,
-    // not to wherever the process happens to have been started. `parent()` is
-    // empty for a bare file name like the default `agent-grafter.toml`, which
-    // means the current directory — spelled explicitly rather than relied on
-    // as an accident of `Path::join("")`.
-    let manifest_dir = match args.manifest.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-
+    let manifest_dir = manifest_dir(&args.manifest);
     let probe = safelink::capability::RealProbe;
     let plan = crate::apply::plan(&manifest, &manifest_dir, &probe);
     let report = if args.dry_run {
@@ -163,6 +162,53 @@ fn apply(args: &ApplyArgs) -> ExitCode {
         ExitCode::UnexpectedError
     } else if report.refused {
         ExitCode::Refused
+    } else {
+        ExitCode::Success
+    }
+}
+
+/// The manifest's own directory: `parent()` for a real path, `.` for a bare
+/// file name (whose `parent()` is empty) — spelled explicitly rather than
+/// relied on as an accident of `Path::join("")`. `apply` and `doctor` both
+/// resolve the manifest's declared `source` relative to this, not to
+/// wherever the process happens to have been started.
+fn manifest_dir(manifest_path: &Path) -> PathBuf {
+    match manifest_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// `doctor`: read-only diagnostics over the current install. See
+/// `crate::doctor` for what each check inspects and why; this function only
+/// wires the manifest read, the resolved manifest directory, and the exit
+/// code together.
+///
+/// Never refuses (it never writes), so it never exits 4 — the exit codes
+/// this maps to are exactly `status`'s: 2 for an unreadable/unparseable
+/// manifest, 1 for a genuine I/O failure while inspecting the filesystem,
+/// 3 for drift, 0 otherwise.
+fn doctor(args: &DoctorArgs) -> ExitCode {
+    let manifest = match manifest::read(&args.manifest) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::InvalidUsage;
+        }
+    };
+
+    let dir = manifest_dir(&args.manifest);
+    let probe = safelink::capability::RealProbe;
+    let report = crate::doctor::diagnose(&manifest, &args.manifest, &dir, &probe);
+
+    for line in &report.lines {
+        println!("{line}");
+    }
+
+    if report.failed {
+        ExitCode::UnexpectedError
+    } else if report.drifted {
+        ExitCode::DriftFound
     } else {
         ExitCode::Success
     }

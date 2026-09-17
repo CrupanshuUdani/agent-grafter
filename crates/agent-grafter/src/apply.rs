@@ -1417,6 +1417,16 @@ fn absolutize(path: &Path) -> PathBuf {
         .collect()
 }
 
+/// The manifest's `source`, resolved exactly the way [`plan`] resolves it:
+/// joined against `manifest_dir` (the directory holding the manifest file,
+/// not the process's working directory) and made absolute via
+/// [`absolutize`]. Exposed so `doctor`'s environment report can print the
+/// same path `plan` computes internally, rather than re-deriving the join
+/// order in a second place.
+pub(crate) fn resolved_source(manifest: &Manifest, manifest_dir: &Path) -> PathBuf {
+    absolutize(&manifest_dir.join(&manifest.source))
+}
+
 /// Every real file beneath `dir`, as paths relative to it, in sorted order.
 ///
 /// Sorted because `read_dir` order is unspecified, and an `apply` whose
@@ -1855,7 +1865,7 @@ fn prefixed(planned: &PlannedEntry, body: &str) -> String {
     with_target(&planned.target, body)
 }
 
-fn with_target(target: &Option<String>, body: &str) -> String {
+pub(crate) fn with_target(target: &Option<String>, body: &str) -> String {
     match target {
         Some(target) => format!("{target}: {body}"),
         None => body.to_string(),
