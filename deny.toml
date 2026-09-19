@@ -1,0 +1,56 @@
+# cargo-deny configuration: licenses + security advisories across the full
+# dependency tree. Generated with `cargo deny init` and trimmed down to the
+# sections this project actually configures; every other check (`bans`,
+# `sources`) runs on cargo-deny's own defaults, which is what `cargo deny
+# check` (running all checks, matching CI's default invocation) already
+# exercised clean against this tree.
+#
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html
+#
+# This allow-list was built by running `cargo deny check licenses` against
+# this workspace's actual dependency tree (not written from memory or
+# assumption) and adding exactly the SPDX identifiers its output named as
+# present:
+#   - MIT, Apache-2.0: the overwhelming majority of the tree, including
+#     this workspace's own `license.workspace = "Apache-2.0"` crates.
+#   - Unicode-3.0: `unicode-ident`'s license expression is
+#     `(MIT OR Apache-2.0) AND Unicode-3.0` -- the `AND` means Unicode-3.0
+#     must be separately allowed; it is not satisfied by the MIT/Apache-2.0
+#     grant alone.
+#
+# Some crates in the tree carry additional license *options* joined by OR
+# (e.g. `rustix`/`linux-raw-sys`: "Apache-2.0 WITH LLVM-exception OR
+# Apache-2.0 OR MIT"; `r-efi`: "MIT OR Apache-2.0 OR LGPL-2.1-or-later"). An
+# OR expression is satisfied by allowing any one branch, so MIT/Apache-2.0
+# alone clears these -- notably r-efi's LGPL-2.1-or-later branch is one
+# *option* among three, not a requirement, so no copyleft obligation
+# actually applies to this dependency tree today. If a future dependency
+# bump ever makes a copyleft license the *only* option for some crate, this
+# allow-list will correctly reject it rather than silently pass -- that is
+# a real decision for a human, not something to pre-allow here.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+# https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
+#
+# Default RustSec advisory database (https://github.com/rustsec/advisory-db),
+# no dependency currently triggers an advisory (see task-3-report.md for the
+# real `cargo deny check advisories` output this was verified against).
+# Deliberately no `ignore` entries: if a future dependency does trigger a
+# RustSec advisory, it must be looked at and either bumped or explicitly
+# ignored with a stated reason -- not silently muted here in advance.
+[advisories]

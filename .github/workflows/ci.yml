@@ -107,3 +107,16 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  cargo-deny:
+    name: cargo deny (licenses + advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Checks licenses, security advisories (RustSec), banned/duplicate
+      # crates, and dependency sources against deny.toml at the workspace
+      # root. The license allow-list there was built from a real
+      # `cargo deny check licenses` run against this dependency tree, not
+      # guessed -- see deny.toml's own comments for what's actually present
+      # and why each entry is there.
+      - uses: EmbarkStudios/cargo-deny-action@v2
