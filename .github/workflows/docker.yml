@@ -149,6 +149,20 @@ jobs:
       # filesystem first is the same workaround Task 5 used locally.
       # GitHub-hosted runners don't have that problem, but doing it this
       # way is free and removes the question entirely.
+      # `apply` is deliberately included, not just the read-only commands.
+      # Materializing files is the entire reason this tool exists, so a
+      # smoke test that only proves the shipped binary can parse arguments
+      # and print diagnostics leaves the one thing users actually download
+      # it for unexercised on the artifact itself. The cross-platform
+      # `test` job in ci.yml covers `apply` thoroughly, but against a
+      # natively-built binary -- not against this static musl build.
+      #
+      # Both materialization paths are covered, because they fail
+      # differently: `copy` writes real bytes, `link` creates a directory
+      # symlink (the primitive this project's whole safety argument is
+      # about). Asserting on disk afterwards, rather than trusting the
+      # command's own exit code, is the difference between "apply ran" and
+      # "apply worked".
       - name: Run inside ${{ matrix.distro }}
         run: |
           set -euo pipefail
@@ -158,7 +172,25 @@ jobs:
             chmod +x /tmp/agent-grafter
             echo "---- --version ----"
             /tmp/agent-grafter --version
-            printf "source = \".\"\n" > /tmp/agent-grafter.toml
+
+            printf "source = \".\"\n" > /tmp/trivial.toml
             echo "---- doctor (trivial throwaway manifest -- exercises TOML parsing and the read-only diagnostics path, not just arg parsing) ----"
-            /tmp/agent-grafter doctor --manifest /tmp/agent-grafter.toml
+            /tmp/agent-grafter doctor --manifest /tmp/trivial.toml
+
+            echo "---- apply (real materialization: one copy entry, one directory link) ----"
+            mkdir -p /tmp/src/memory /tmp/src/agents /tmp/dest
+            echo remembered > /tmp/src/memory/note.md
+            echo skill > /tmp/src/agents/skill.md
+            printf "source = \"/tmp/src\"\ncopy = [\"memory\"]\nlink = [\"agents\"]\n\n[targets.example]\ndest = \"/tmp/dest\"\n" > /tmp/real.toml
+            /tmp/agent-grafter apply --manifest /tmp/real.toml
+
+            echo "---- assert what actually landed on disk ----"
+            test -f /tmp/dest/memory/note.md || { echo "FAIL: copy entry did not materialize"; exit 1; }
+            grep -q remembered /tmp/dest/memory/note.md || { echo "FAIL: copied file has wrong content"; exit 1; }
+            test -L /tmp/dest/agents || { echo "FAIL: link entry is not a symlink"; exit 1; }
+            test -f /tmp/dest/agents/skill.md || { echo "FAIL: cannot read through the directory link"; exit 1; }
+            echo "copy materialized, link materialized and traversable"
+
+            echo "---- status (exit 0 proves apply left the install in sync) ----"
+            /tmp/agent-grafter status --manifest /tmp/real.toml
           '
