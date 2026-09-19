@@ -1,0 +1,84 @@
+name: Docker musl build
+
+# Separate workflow file from ci.yml (not merged into it): this job builds
+# and verifies a fully static Linux binary in Docker, an independent concern
+# from the native cargo build/test/lint/deny jobs in ci.yml, and keeping it
+# in its own file avoids any risk of colliding with concurrent edits to
+# ci.yml from other CI-hardening work in this same plan.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  musl-static-build:
+    name: musl static build (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The default `docker` buildx driver's support for exporters like
+      # `--output type=local` is version-dependent. A `docker-container`
+      # builder (what this action creates) supports every exporter
+      # unconditionally, so this removes that question rather than hoping
+      # the runner's preinstalled buildx driver happens to support it.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Builds `agent-grafter` for x86_64-unknown-linux-musl with
+      # -C target-feature=+crt-static (see Dockerfile) and exports ONLY the
+      # `export` stage (a `scratch` image containing just the binary) to
+      # ./dist on the runner's filesystem. No `docker create`/`docker cp`
+      # container needed.
+      - name: Build static musl binary
+        run: docker buildx build --target export --output type=local,dest=dist -f Dockerfile .
+
+      # Do not trust "built with the musl target" to mean "genuinely
+      # static" -- a musl-target build can still end up dynamically linking
+      # musl libc itself if not built correctly. This mirrors the existing
+      # "assert the assumption actually held" convention already in ci.yml
+      # (the Windows elevation check, the "safety suite actually ran" check):
+      # fail the build loudly if the binary is not what it claims to be,
+      # rather than letting Task 6 discover a dynamically-linked binary
+      # later.
+      #
+      # `file`/`readelf` report this as "static-pie linked" (a PIE binary
+      # that is nonetheless fully self-contained), not the older plain
+      # "statically linked" wording -- that is still genuinely static: the
+      # real proof is zero PT_INTERP and zero DT_NEEDED entries, which is
+      # exactly what this step checks.
+      - name: Verify the binary is genuinely statically linked
+        run: |
+          set -euo pipefail
+          BIN=dist/agent-grafter
+          echo "---- file ----"
+          file "$BIN"
+          echo "---- ldd ----"
+          ldd "$BIN" || true
+          echo "---- readelf -l (looking for PT_INTERP) ----"
+          readelf -l "$BIN"
+          if readelf -l "$BIN" | grep -qi interp; then
+            echo "::error::binary has a PT_INTERP segment -- it requires a dynamic loader and is NOT genuinely static"
+            exit 1
+          fi
+          echo "---- readelf -d (looking for DT_NEEDED) ----"
+          readelf -d "$BIN"
+          if readelf -d "$BIN" 2>/dev/null | grep -qi needed; then
+            echo "::error::binary has DT_NEEDED entries -- it dynamically links a shared library and is NOT genuinely static"
+            exit 1
+          fi
+          echo "Confirmed: no PT_INTERP, no DT_NEEDED -- agent-grafter is genuinely statically linked."
+
+      # Named artifact Task 6 (multi-distro smoke test) downloads by this
+      # exact name via actions/download-artifact@v4, then runs
+      # dist/agent-grafter directly (no further extraction step). Note for
+      # Task 6's implementer: upload-artifact zips the contents; always
+      # `chmod +x dist/agent-grafter` after download before invoking it, in
+      # case the executable bit did not survive the round trip.
+      - name: Upload static binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-grafter-musl-x86_64
+          path: dist/agent-grafter
+          if-no-files-found: error
