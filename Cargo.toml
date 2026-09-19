@@ -5,6 +5,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
+repository = "https://github.com/CrupanshuUdani/agent-grafter"
 # Determined empirically (not from the edition-2024 floor alone -- that
 # floor is 1.85.0, but this codebase's if-let chains, e.g.
 # crates/agent-grafter/src/manifest.rs, require the let-chains feature

@@ -3,6 +3,7 @@ name = "agent-grafter"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "CLI that materializes declared AI agent config/state file pairs across Windows/macOS/Linux"
 
@@ -10,7 +11,12 @@ description = "CLI that materializes declared AI agent config/state file pairs a
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-safelink = { path = "../safelink" }
+# `version` alongside `path` is required to publish: cargo strips the path
+# from the published manifest and resolves safelink from crates.io instead,
+# so without a version the publish is refused outright. Consequence worth
+# knowing: safelink must be published BEFORE agent-grafter, and this version
+# must be bumped in lockstep with safelink's own.
+safelink = { path = "../safelink", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = "3"

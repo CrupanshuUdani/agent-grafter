@@ -3,6 +3,7 @@ name = "safelink"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "Explicit, non-guessing link materialization for Windows, macOS and Linux"
 
