@@ -120,3 +120,24 @@ jobs:
       # guessed -- see deny.toml's own comments for what's actually present
       # and why each entry is there.
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  msrv:
+    name: msrv (check + test on 1.88.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the exact version determined and verified locally (see
+      # README.md's Requirements section and this task's report): the
+      # edition-2024 floor alone is 1.85.0, but this codebase's if-let
+      # chains (e.g. crates/agent-grafter/src/manifest.rs) require the
+      # let-chains feature stabilized in 1.88.0. `@stable` would not catch
+      # a future MSRV regression -- only pinning the actual floor does.
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      # `--locked` keeps this job's result tied to the committed
+      # dependency set rather than the resolver picking newer, possibly
+      # higher-MSRV versions at CI time for unrelated reasons.
+      - name: Check (MSRV floor)
+        run: cargo check --workspace --all-targets --locked
+      - name: Test (MSRV floor)
+        run: cargo test --workspace --locked
