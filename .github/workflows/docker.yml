@@ -31,8 +31,22 @@ jobs:
       # `export` stage (a `scratch` image containing just the binary) to
       # ./dist on the runner's filesystem. No `docker create`/`docker cp`
       # container needed.
+      #
+      # --cache-from/--cache-to type=gha: without these, every run is a cold
+      # `--release` build of the whole dependency tree, which is by far the
+      # most expensive job in this repo. The native jobs in ci.yml already
+      # cache their dependencies (Swatinem/rust-cache); this is the same
+      # intent applied to the one build that runs inside Docker, where that
+      # action cannot reach. mode=max caches intermediate layers too, not
+      # just the final one, which is what actually helps a multi-stage build.
       - name: Build static musl binary
-        run: docker buildx build --target export --output type=local,dest=dist -f Dockerfile .
+        run: |
+          docker buildx build \
+            --target export \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --output type=local,dest=dist \
+            -f Dockerfile .
 
       # Do not trust "built with the musl target" to mean "genuinely
       # static" -- a musl-target build can still end up dynamically linking
