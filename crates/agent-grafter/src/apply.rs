@@ -349,6 +349,7 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
                 dest: &target.dest,
                 run_timestamp: &run_timestamp,
                 probe,
+                backup_root: linked_backup_root(&target.dest),
             },
             &mut entries,
             &mut prunes,
@@ -415,6 +416,18 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
 /// share a root and therefore share this directory, so an entry belonging to
 /// the other one still fills it — the path is the thing that decides, and the
 /// target name is only a label for the report.
+///
+/// The backup root itself is classified first, via [`linked_backup_root`] —
+/// the same function `plan()` consults for the write and prune sides —
+/// before anything reads from it. `plan_retention` calls `std::fs::read_dir(backups_dir)`
+/// with no classification of `backups_dir` itself, only of the entries it
+/// turns up; if the backup root is a link, `read_dir` reads straight through
+/// it into whatever it actually points at, and a real subdirectory there
+/// named like a valid timestamp is indistinguishable, from that point on,
+/// from this tool's own backup — eligible for eviction, and once evicted,
+/// deleted by `remove_backup_dir` outside `target.dest` entirely. Classifying
+/// the root first, and skipping the sweep outright when it is a link, closes
+/// that before `read_dir` is ever called.
 fn plan_target_retention(
     target_name: &str,
     target_dest: &Path,
@@ -425,6 +438,22 @@ fn plan_target_retention(
     notes: &mut Vec<PlanNote>,
 ) {
     let backups_dir = target_dest.join(BACKUP_DIR);
+
+    if let Some(backups_dir) = linked_backup_root(target_dest) {
+        notes.push(PlanNote {
+            target: Some(target_name.to_string()),
+            message: format!(
+                "backup retention skipped: {BACKUP_DIR} at {} is a link, so \
+                 reading it could sweep through whatever it points at instead \
+                 of this target's own backups; nothing else about this run is \
+                 affected. Remove or rename whatever currently occupies \
+                 {BACKUP_DIR}, then re-run.",
+                backups_dir.display()
+            ),
+        });
+        return;
+    }
+
     let lands_here = |backup: &Option<PathBuf>| {
         backup
             .as_ref()
@@ -659,6 +688,21 @@ struct TargetContext<'a> {
     /// This invocation's backup subdirectory name.
     run_timestamp: &'a str,
     probe: &'a dyn SymlinkProbe,
+    /// This target's own backup root ([`BACKUP_DIR`] under `dest`), when it
+    /// is classified as a link — computed once, in [`plan`], via
+    /// [`linked_backup_root`], before any entry or prune candidate is
+    /// resolved. Consulted by both [`resolve`] (entries) and [`plan_prunes`]
+    /// (prune candidates), the two places that would otherwise call
+    /// `backup_path` and get back a path resolving through this link: each
+    /// turns what would have been a write or a delete through it into a
+    /// visible refusal instead, rather than a write or delete with no
+    /// backup (Constraint 4 forbids that smaller unsafe version exactly as
+    /// much as the unsafe write or delete itself). Something that needs no
+    /// backup either way is unaffected. Carried as the classified path
+    /// rather than a pre-built message, since the two call sites word their
+    /// refusal differently ("nothing was written" vs. "nothing was
+    /// removed").
+    backup_root: Option<PathBuf>,
 }
 
 /// Plan every declared entry for one target: `link` entries first, then
@@ -1173,6 +1217,21 @@ enum Found {
     Link,
 }
 
+/// Joins `declared_dir` (raw, always-forward-slash manifest text) with `rel`
+/// (already split into real filesystem components by the destination walk in
+/// [`plan_prunes`] below) purely from components, the same fix already
+/// applied to `resolve_scoped_dest`'s `names`-based rebuild and
+/// `plan_copy_entry`'s `full_rel` (commit `4d150b2`): a literal `Path::join`
+/// never rewrites the separators already embedded *inside* `declared_dir`,
+/// only the one it inserts at the join point, so on Windows the two report
+/// sites in `plan_prunes` would otherwise display a path mixing `/` and `\`.
+fn declared_label_path(declared_dir: &str, rel: &Path) -> PathBuf {
+    Path::new(declared_dir)
+        .components()
+        .chain(rel.components())
+        .collect()
+}
+
 /// Compare one declared directory's destination subtree against its current
 /// source subtree, and plan the difference.
 ///
@@ -1258,7 +1317,7 @@ fn plan_prunes(
                     message: format!(
                         "prune skipped for {}: could not tell whether the \
                          source still has it: {e}. It was left in place.",
-                        Path::new(declared_dir).join(&rel).display()
+                        declared_label_path(declared_dir, &rel).display()
                     ),
                 });
                 continue;
@@ -1273,11 +1332,10 @@ fn plan_prunes(
             continue;
         }
 
-        let label = Path::new(declared_dir)
-            .join(&rel)
+        let label = declared_label_path(declared_dir, &rel)
             .to_string_lossy()
             .into_owned();
-        let decision = match kind {
+        let mut decision = match kind {
             Found::Link => PruneDecision::LeftInPlace(
                 "a link, not a file this tool materialized; refusing to remove \
                  it or to delete anything through it"
@@ -1285,10 +1343,30 @@ fn plan_prunes(
             ),
             Found::File => PruneDecision::Remove,
         };
-        let backup = match decision {
+        let mut backup = match decision {
             PruneDecision::Remove => backup_path(&dest, ctx.dest, ctx.run_timestamp),
             PruneDecision::LeftInPlace(_) => None,
         };
+
+        // The same check `resolve` makes for a write, applied to a removal:
+        // a file this pass would otherwise remove (and therefore back up
+        // first) is left in place instead when the backup it would need
+        // could only be filed through a linked backup root. See
+        // `TargetContext::backup_root`'s doc comment.
+        if backup.is_some()
+            && let Some(backups_dir) = &ctx.backup_root
+        {
+            decision = PruneDecision::LeftInPlace(format!(
+                "{BACKUP_DIR} at {} is a link, so a backup filed there for \
+                 this file could land outside {}; refusing to remove it \
+                 without the backup it would normally get. Remove or rename \
+                 whatever currently occupies {BACKUP_DIR}, then re-run.",
+                backups_dir.display(),
+                ctx.dest.display()
+            ));
+            backup = None;
+        }
+
         out.push(PlannedPrune {
             target: Some(ctx.name.to_string()),
             label,
@@ -1402,6 +1480,16 @@ fn absolutize(path: &Path) -> PathBuf {
         .collect()
 }
 
+/// The manifest's `source`, resolved exactly the way [`plan`] resolves it:
+/// joined against `manifest_dir` (the directory holding the manifest file,
+/// not the process's working directory) and made absolute via
+/// [`absolutize`]. Exposed so `doctor`'s environment report can print the
+/// same path `plan` computes internally, rather than re-deriving the join
+/// order in a second place.
+pub(crate) fn resolved_source(manifest: &Manifest, manifest_dir: &Path) -> PathBuf {
+    absolutize(&manifest_dir.join(&manifest.source))
+}
+
 /// Every real file beneath `dir`, as paths relative to it, in sorted order.
 ///
 /// Sorted because `read_dir` order is unspecified, and an `apply` whose
@@ -1433,6 +1521,11 @@ fn collect_files(dir: &Path, prefix: &Path, out: &mut Vec<PathBuf>) -> io::Resul
 
 /// Turn one resolved `Entry` into a `PlannedEntry` by deciding what the
 /// current state of its destination means.
+///
+/// An entry that would get a computed `backup_path` is refused instead, when
+/// `ctx.backup_root` says this target's backup root is a link — see that
+/// field's doc comment. Checked here, the one place every entry (`link` and
+/// both `copy` shapes) is resolved, rather than duplicated per call site.
 fn resolve(ctx: &TargetContext<'_>, declared: &str, label: &str, entry: Entry) -> PlannedEntry {
     let decision = decide(&entry, ctx.probe);
     let backup = if decision == Decision::Write {
@@ -1440,6 +1533,28 @@ fn resolve(ctx: &TargetContext<'_>, declared: &str, label: &str, entry: Entry) -
     } else {
         None
     };
+
+    if backup.is_some()
+        && let Some(backups_dir) = &ctx.backup_root
+    {
+        let reason = format!(
+            "{BACKUP_DIR} at {} is a link, so a backup filed there for this \
+             entry could land outside {}; refusing to write it without the \
+             backup it would normally get. Remove or rename whatever \
+             currently occupies {BACKUP_DIR}, then re-run.",
+            backups_dir.display(),
+            ctx.dest.display()
+        );
+        return PlannedEntry {
+            target: Some(ctx.name.to_string()),
+            label: label.to_string(),
+            declared: declared.to_string(),
+            entry: Some(entry),
+            backup: None,
+            decision: Decision::Refused(reason),
+        };
+    }
+
     PlannedEntry {
         target: Some(ctx.name.to_string()),
         label: label.to_string(),
@@ -1581,6 +1696,39 @@ fn has_identical_bytes(source: &Path, dest: &Path) -> bool {
     match (std::fs::read(source), std::fs::read(dest)) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
+    }
+}
+
+/// Classify a target's own backup root — `target_dest.join(BACKUP_DIR)` —
+/// once, before it is used for anything.
+///
+/// Neither `backup_path` below nor `retention::plan_retention` ever
+/// classified this path itself: `backup_path` only classifies the path it is
+/// asked to back up, and `plan_retention` only classifies the entries a
+/// `read_dir` of the backup root turns up (`retention.rs:109`), never the
+/// root of that `read_dir` call. If the backup root is itself a link — not
+/// through a manifest-declared entry (S3c's `resolve_scoped_dest` already
+/// refuses that), but by prior tampering, a leftover from an older version,
+/// or anything else — a backed-up write, a backed-up prune, and the
+/// retention sweep would all otherwise resolve through it: a backup can land
+/// outside `target_dest` either way, and a real directory on the other side
+/// of the link, merely named like a valid backup timestamp, can be deleted
+/// by the sweep. This is the one place that question is asked, and every
+/// caller that is about to use `target.dest.join(BACKUP_DIR)` for anything —
+/// [`plan`] (stored on [`TargetContext`], consulted by both [`resolve`] and
+/// [`plan_prunes`]) and [`plan_target_retention`] — consults it first.
+///
+/// `Some` only when it is a link, which is the one state that changes what
+/// a caller may do. Nothing there yet (the normal state before the first
+/// backup) and an ordinary directory are both "proceed as usual"; so is an
+/// inspection error, which each caller already has its own honest handling
+/// for (the path it was asked to back up, or the `read_dir` failure in
+/// `plan_retention`) and which this function need not duplicate.
+fn linked_backup_root(target_dest: &Path) -> Option<PathBuf> {
+    let backups_dir = target_dest.join(BACKUP_DIR);
+    match classify(&backups_dir) {
+        Ok(LinkClass::DirLink | LinkClass::FileLink) => Some(backups_dir),
+        _ => None,
     }
 }
 
@@ -1840,7 +1988,7 @@ fn prefixed(planned: &PlannedEntry, body: &str) -> String {
     with_target(&planned.target, body)
 }
 
-fn with_target(target: &Option<String>, body: &str) -> String {
+pub(crate) fn with_target(target: &Option<String>, body: &str) -> String {
     match target {
         Some(target) => format!("{target}: {body}"),
         None => body.to_string(),
