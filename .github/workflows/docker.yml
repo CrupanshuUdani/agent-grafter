@@ -82,3 +82,69 @@ jobs:
           name: agent-grafter-musl-x86_64
           path: dist/agent-grafter
           if-no-files-found: error
+
+  # Task 6 (multi-distro smoke test): "genuinely static" per readelf is not
+  # the same claim as "actually runs everywhere" -- this job is the real
+  # end-to-end proof, not a restatement of the previous job's linkage check.
+  multi-distro-smoke-test:
+    name: multi-distro smoke test (${{ matrix.distro }})
+    needs: musl-static-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian, alpine, fedora]
+    steps:
+      # Download the exact artifact musl-static-build uploaded, rather than
+      # rebuilding -- this proves the binary Task 5's job actually shipped
+      # runs, not a fresh build that happens to also come out static.
+      - name: Download static binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-grafter-musl-x86_64
+          path: dist
+
+      # upload-artifact's zip transport is not guaranteed to preserve the
+      # executable bit across the round trip (flagged but left unverified
+      # by the previous job's own upload step) -- always reassert +x here
+      # rather than assuming it survived.
+      - name: Restore executable bit
+        run: chmod +x dist/agent-grafter
+
+      # The point of testing three distros for a *statically linked* binary
+      # is to catch a build that is secretly dynamically linked against
+      # something present on the musl builder image but absent elsewhere.
+      # Alpine is the sharpest test here: it ships no glibc at all, so a
+      # binary that quietly depends on glibc fails loudly there and nowhere
+      # else. Debian and Fedora both are glibc-based (different versions/
+      # libc implementations of key shared libraries), so together the
+      # three cover musl's two most common real-world targets: "some
+      # glibc" and "no libc at all".
+      #
+      # Distro tags are deliberately unpinned (not a pinned digest): this
+      # is a smoke test meant to catch drift in what each distro's
+      # *current* official image ships, not a reproducible build input --
+      # the same floating-tag choice this repo's own Dockerfile already
+      # makes for its `rust:1-alpine` base.
+      #
+      # The binary is copied out of the read-only artifact mount into the
+      # container's own filesystem before being invoked, rather than
+      # executed in place from the bind mount: this repo's dev environment
+      # has hit an NTFS/ntfs3 mount that breaks mmap-exec for statically
+      # linked binaries (see Task 5's report), and copying to a normal
+      # filesystem first is the same workaround Task 5 used locally.
+      # GitHub-hosted runners don't have that problem, but doing it this
+      # way is free and removes the question entirely.
+      - name: Run inside ${{ matrix.distro }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist:/artifact:ro" ${{ matrix.distro }} sh -c '
+            set -eu
+            cp /artifact/agent-grafter /tmp/agent-grafter
+            chmod +x /tmp/agent-grafter
+            echo "---- --version ----"
+            /tmp/agent-grafter --version
+            printf "source = \".\"\n" > /tmp/agent-grafter.toml
+            echo "---- doctor (trivial throwaway manifest -- exercises TOML parsing and the read-only diagnostics path, not just arg parsing) ----"
+            /tmp/agent-grafter doctor --manifest /tmp/agent-grafter.toml
+          '
