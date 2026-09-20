@@ -10,11 +10,14 @@
 //! it checks every declared `copy` and `link` entry (by reusing
 //! `crate::apply::plan`, the same decision `apply` itself would reach),
 //! link-target drift `is_same()` cannot see, and each target's backup-root
-//! health — see `crate::doctor` for the full breakdown. `unlink` remains a
-//! stub subcommand that parses its own args and exits 0; a later task fills
-//! it in. There is no `explain` subcommand: `apply --dry-run` already prints
-//! the full plan, and clap's own `help` subcommand (see below) covers the
-//! rest of what a stub named `explain` would have offered.
+//! health — see `crate::doctor` for the full breakdown. `unlink` really
+//! removes (Task S8), using the same plan/execute split `apply` does and the
+//! same exit-code mapping: it removes links via `safelink` and plain files
+//! that still match their declared source, and refuses everything else — see
+//! `crate::unlink` for what it will and will not touch, and for why it never
+//! restores a backup. There is no `explain` subcommand: `apply --dry-run`
+//! already prints the full plan, and clap's own `help` subcommand (see below)
+//! covers the rest of what a stub named `explain` would have offered.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -76,7 +79,8 @@ enum Command {
     Status(StatusArgs),
     /// Diagnose the current install: read-only checks, never a write.
     Doctor(DoctorArgs),
-    /// Remove previously materialized entries. Stub in S1 (real behavior: S3).
+    /// Remove previously materialized entries: links, and copies that still
+    /// match their declared source. Refuses anything else.
     Unlink(UnlinkArgs),
 }
 
@@ -102,7 +106,13 @@ struct DoctorArgs {
 }
 
 #[derive(clap::Args)]
-struct UnlinkArgs {}
+struct UnlinkArgs {
+    /// Report what would be removed without touching the filesystem.
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long, default_value = DEFAULT_MANIFEST)]
+    manifest: PathBuf,
+}
 
 /// Parse arguments from the process environment and dispatch, returning
 /// the exit code the process should terminate with.
@@ -130,7 +140,7 @@ pub fn run() -> ExitCode {
         Command::Apply(args) => apply(&args),
         Command::Status(args) => status(&args),
         Command::Doctor(args) => doctor(&args),
-        Command::Unlink(_) => ExitCode::Success,
+        Command::Unlink(args) => unlink(&args),
     }
 }
 
@@ -159,6 +169,51 @@ fn apply(args: &ApplyArgs) -> ExitCode {
         plan.describe()
     } else {
         crate::apply::execute(&plan, &probe)
+    };
+
+    for line in &report.lines {
+        println!("{line}");
+    }
+
+    if report.failed {
+        ExitCode::UnexpectedError
+    } else if report.refused {
+        ExitCode::Refused
+    } else {
+        ExitCode::Success
+    }
+}
+
+/// `unlink` (`--dry-run` or not): compute the full removal plan, then either
+/// print it or carry it out.
+///
+/// Wired exactly like `apply` above, and for the same reason (Constraint 3):
+/// both modes run the identical decision logic in `crate::unlink::plan`, so
+/// `--dry-run` reports the same exit code a real run would and a CI gate on
+/// exit 4 behaves the same either way.
+///
+/// The exit-code mapping is `apply`'s, minus code 3: `unlink` is not a drift
+/// checker, so it never reports a finding — 2 for an unreadable or
+/// unparseable manifest, 4 for anything it refused to remove, 1 for a genuine
+/// I/O failure while removing, 0 otherwise.
+///
+/// No `SymlinkProbe` is passed. `crate::unlink::plan` takes none: a probe
+/// answers whether a symlink can be *created*, which is not a question this
+/// command asks — see that function's own doc comment.
+fn unlink(args: &UnlinkArgs) -> ExitCode {
+    let manifest = match manifest::read(&args.manifest) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::InvalidUsage;
+        }
+    };
+
+    let plan = crate::unlink::plan(&manifest, &manifest_dir(&args.manifest));
+    let report = if args.dry_run {
+        plan.describe()
+    } else {
+        crate::unlink::execute(&plan)
     };
 
     for line in &report.lines {
