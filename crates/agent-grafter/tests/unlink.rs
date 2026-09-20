@@ -86,6 +86,16 @@ impl Env {
         fs::write(self.root().join("agent-grafter.toml"), toml).expect("write manifest");
     }
 
+    /// Write a manifest whose single target points somewhere other than this
+    /// env's `dest/`. Used by the tests that aim a target at the source root.
+    fn write_manifest_with_dest(&self, body: &str, dest: &Path) {
+        let toml = format!(
+            "source = \"source\"\n{body}\n\n[targets.example]\ndest = '{}'\n",
+            dest.display()
+        );
+        fs::write(self.root().join("agent-grafter.toml"), toml).expect("write manifest");
+    }
+
     /// Run the built binary inside this env's root.
     fn run(&self, args: &[&str]) -> Run {
         let output = Command::new(env!("CARGO_BIN_EXE_agent-grafter"))
@@ -603,4 +613,80 @@ fn a_copy_entry_whose_source_is_gone_is_refused_not_guessed_at() {
         b"first",
         "a copy with no source to verify it against must be left in place"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Ownership, as distinct from content.
+//
+// Byte equality answers "same content". Removal needs a different question
+// answered: "is this a separate artifact from the source, or is it the
+// source?" That is filesystem identity, and byte equality answers it
+// vacuously in the affirmative when the two paths are one object — a file is
+// always byte-identical to itself.
+//
+// Both tests below were watched FAILING against the pre-fix code, each
+// destroying the only copy of the content, before the identity guard existed.
+// ---------------------------------------------------------------------------
+
+/// **SAFETY TEST — regression, fix round 1.**
+///
+/// A target whose `dest` *is* the source root. Every declared entry then
+/// resolves to its own source, and the content comparison says "identical"
+/// because it is literally the same file. Pre-fix, `unlink` reported
+/// `removed`, exited 0, and deleted the user's canonical tree.
+#[test]
+fn a_target_whose_dest_is_the_source_root_is_refused_not_removed() {
+    let env = Env::new();
+    env.write_source("modes/one.md", b"first");
+    env.write_source("memory/note.md", b"remembered");
+    let source_root = env.source();
+    env.write_manifest_with_dest("copy = [\"modes\"]\nlink = [\"memory\"]", &source_root);
+
+    let run = env.unlink();
+
+    // Content first, exit code second, for the reason this module's doc
+    // comment gives.
+    assert_eq!(
+        fs::read(env.source().join("modes/one.md")).unwrap(),
+        b"first",
+        "unlink must never delete the canonical source it compares against"
+    );
+    assert!(
+        env.source().join("memory/note.md").exists(),
+        "nor anything else in the source tree"
+    );
+    run.assert_exit(4);
+}
+
+/// **SAFETY TEST — regression, fix round 1.**
+///
+/// A declared source entry that is a link *into* the destination. The source
+/// side then resolves to the very file at the destination, so the content
+/// comparison is again vacuously true — and unlike the case above, the two
+/// roots are entirely disjoint, so no amount of comparing `dest` against the
+/// source *root* would catch it. Pre-fix, `unlink` deleted the only real copy
+/// and left the source entry dangling.
+#[test]
+fn a_source_entry_linking_into_the_destination_is_refused_not_removed() {
+    let env = Env::new();
+    // The only real copy of this content lives under `dest/`.
+    env.write_dest("shared/one.md", b"the only copy");
+    // The declared source entry is a link pointing straight at it. Built with
+    // the engine itself — link creation is never reimplemented in a test.
+    safelink::create::create_dir_link(&env.dest().join("shared"), &env.source().join("shared"))
+        .expect("create source link");
+    env.write_manifest("copy = [\"shared\"]");
+
+    let run = env.unlink();
+
+    assert_eq!(
+        fs::read(env.dest().join("shared/one.md")).unwrap(),
+        b"the only copy",
+        "unlink must not delete a file the declared source itself resolves to"
+    );
+    assert!(
+        fs::read(env.source().join("shared/one.md")).is_ok(),
+        "the source entry must not be left dangling"
+    );
+    run.assert_exit(4);
 }

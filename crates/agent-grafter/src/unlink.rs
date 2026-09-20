@@ -11,8 +11,9 @@
 //! **This command never writes.** Its entire removal surface is two calls:
 //! `safelink::remove::remove_link` for anything that classifies as a link
 //! (Constraint 5 — link removal is never reimplemented here), and
-//! `std::fs::remove_file` for a plain file whose bytes are identical to the
-//! declared source. It creates no backup directory, never triggers the
+//! `std::fs::remove_file` for a plain file that is a separate artifact from
+//! the declared source and identical to it. It creates no backup directory,
+//! never triggers the
 //! retention sweep, and has no path that removes a directory, recursively or
 //! otherwise. That one-sentence claim is what the refusals below buy, and it
 //! is why they are refusals rather than "back it up first and delete it
@@ -26,13 +27,27 @@
 //!     no target comparison is made before removing one (`doctor`'s check 4
 //!     is where a link's *target* is a finding; here it cannot change the
 //!     answer, since there is no outcome in which real data is lost).
-//!   - **A plain file byte-identical to the declared source.** Then the
-//!     content still exists at the source and removing the destination copy
-//!     loses nothing. This is the same criterion `apply::is_same` already
-//!     uses to decide a `FileCopy` needs no rewrite, reused rather than
-//!     restated — and it is the only thing standing between `unlink` and a
-//!     user's edited file, since a materialized `copy` entry is *real files*
-//!     with no link indirection to protect them.
+//!   - **A plain file that is a *separate artifact* from the declared source
+//!     and byte-identical to it.** Both halves are load-bearing, and the
+//!     first half is not optional — see below. Given separateness, byte
+//!     equality means the content still exists at the source and removing
+//!     the destination copy loses nothing; that comparison reuses
+//!     `apply::is_same`'s criterion rather than restating it, and it is what
+//!     stands between `unlink` and a user's edited file.
+//!
+//! **Separateness is a distinct question from sameness of content, and
+//! conflating them is a data-loss bug this module shipped once.** Byte
+//! equality asks "is this the same content"; removal needs "is this a
+//! materialized copy, or is it the original". A file is always byte-identical
+//! to *itself*, so a content comparison answers the second question
+//! vacuously — with "yes, delete it" — exactly when the destination and the
+//! source are one object. Two configurations reach that state without
+//! anything being malformed: a `[targets.*]` whose `dest` is (or is inside)
+//! the source root, and a declared source entry that is a link pointing into
+//! the destination. Both deleted the user's canonical tree while reporting
+//! success. [`ownership`] is the guard, it asks a filesystem-identity
+//! question rather than a content one, and it runs before the byte
+//! comparison at plan time and again immediately before the removal.
 //!
 //! Everything else is refused, out loud, with exit code 4: a real directory
 //! where a link was declared, a file whose bytes differ from the source, a
@@ -100,6 +115,11 @@ pub struct PlannedRemoval {
     /// every intermediate component was classified as a real, non-link
     /// directory (or confirmed absent) — see [`resolve_removal_dest`].
     pub dest: PathBuf,
+    /// The target root [`dest`](Self::dest) was built from. Carried so
+    /// [`remove_one`] can re-run the whole component walk immediately before
+    /// removing anything, rather than trusting a walk made at plan time.
+    /// Empty for a refusal that never resolved a destination at all.
+    pub dest_root: PathBuf,
     /// The declared source this destination is compared against, when there
     /// is one. `None` when the source no longer exists, which is survivable
     /// for a link (removal destroys nothing either way) and fatal for a copy
@@ -195,6 +215,7 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path) -> Plan {
                 label: label.clone(),
                 declared: label.clone(),
                 dest: PathBuf::new(),
+                dest_root: PathBuf::new(),
                 source: None,
                 decision: Decision::Refused(
                     "the manifest declares no [targets.*], so there is no \
@@ -248,6 +269,19 @@ fn plan_target(
         return;
     }
 
+    // A target root that resolves to, or inside, the source root means every
+    // declared entry's destination *is* its own source. The per-destination
+    // ownership check in `decide` catches each one individually and would be
+    // sufficient on its own, but it would report N confusing per-file
+    // refusals for what is one misconfigured line of manifest. Said once,
+    // here, where the user can act on it.
+    if let Some(reason) = dest_root_inside_source(source_root, dest_root) {
+        for label in manifest.link.iter().chain(manifest.copy.iter()) {
+            out.push(refusal(target_name, label, reason.clone()));
+        }
+        return;
+    }
+
     for name in &manifest.link {
         out.push(plan_link_entry(source_root, target_name, dest_root, name));
     }
@@ -288,6 +322,7 @@ fn plan_link_entry(
         label: name.to_string(),
         declared: name.to_string(),
         dest,
+        dest_root: dest_root.to_path_buf(),
         source,
         decision,
     }
@@ -347,6 +382,7 @@ fn plan_copy_entry(
             label: name.to_string(),
             declared: name.to_string(),
             dest,
+            dest_root: dest_root.to_path_buf(),
             source: Some(source),
             decision,
         });
@@ -391,6 +427,7 @@ fn plan_copy_entry(
                     label,
                     declared: name.to_string(),
                     dest: PathBuf::new(),
+                    dest_root: PathBuf::new(),
                     source: None,
                     decision: Decision::Refused(reason),
                 });
@@ -404,10 +441,74 @@ fn plan_copy_entry(
             label,
             declared: name.to_string(),
             dest,
+            dest_root: dest_root.to_path_buf(),
             source: Some(file_source),
             decision,
         });
     }
+}
+
+/// Whether this target's `dest` root resolves to, or inside, the source root
+/// — in which case nothing under it is a materialized copy of anything, and
+/// every removal would be a deletion from the canonical tree.
+///
+/// Checked after `plan_target` has confirmed `dest_root` is a real directory,
+/// so a canonicalization failure on that side is genuinely odd and refuses.
+/// A source root that does not exist cannot contain anything, so that one
+/// arm proceeds: `plan_copy_entry` already refuses every entry it would
+/// affect, and a `link` entry with no source removes only links.
+///
+/// Only this direction is refused. The reverse — a source root *inside* the
+/// dest root, e.g. a canonical tree kept at `~/.agent/canonical` materialized
+/// into `~/.agent` — is an ordinary, valid layout in which the two paths
+/// remain distinct objects, and refusing it would break a real setup to
+/// prevent nothing.
+///
+/// **This is `unlink`'s guard alone.** The same configuration is arguably
+/// never valid for `apply` or `doctor` either, and lifting it to a shared
+/// manifest-level refusal is the better long-term shape — but changing
+/// `apply`'s refusals is a scope change this task was explicitly not
+/// authorised to make. See the task report.
+fn dest_root_inside_source(source_root: &Path, dest_root: &Path) -> Option<String> {
+    let canonical_dest = match std::fs::canonicalize(dest_root) {
+        Ok(path) => path,
+        Err(e) => {
+            return Some(format!(
+                "could not resolve the target root {} to check that it is not \
+                 the source tree itself: {e}; nothing was removed.",
+                dest_root.display()
+            ));
+        }
+    };
+    let canonical_source = match std::fs::canonicalize(source_root) {
+        Ok(path) => path,
+        // No source root at all, so nothing can be inside it.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            return Some(format!(
+                "could not resolve the declared source {} to check that this \
+                 target does not point inside it: {e}; nothing was removed.",
+                source_root.display()
+            ));
+        }
+    };
+
+    canonical_dest.starts_with(&canonical_source).then(|| {
+        format!(
+            "this target's dest ({}) resolves to {}, which is the declared \
+             source tree itself{}. Everything it declares would therefore \
+             resolve to its own source, so removing any of it would delete \
+             the canonical copy rather than a materialized one; nothing was \
+             removed. Point `dest` outside the source tree.",
+            dest_root.display(),
+            canonical_dest.display(),
+            if canonical_dest == canonical_source {
+                String::new()
+            } else {
+                format!(" ({})", canonical_source.display())
+            }
+        )
+    })
 }
 
 /// Where `unlink` says this target's backups were left.
@@ -562,10 +663,132 @@ fn resolve_removal_dest(dest_root: &Path, declared: &str, rel: &Path) -> Result<
     Ok(joined(&names))
 }
 
+/// Is the thing at `dest` a *separate artifact* from the declared source, or
+/// is it the source itself?
+///
+/// This is the guard whose absence was a data-loss bug. It asks a filesystem
+/// identity question; `has_identical_bytes` asks a content question, and a
+/// content question cannot answer this one — a file is byte-identical to
+/// itself, so content equality says "safe to delete" precisely when deletion
+/// destroys the original.
+///
+/// **The predicate differs by what is at the destination, and the difference
+/// is not incidental.**
+///
+///   - For a **link** at `dest`, the final component must *not* be
+///     dereferenced. A correctly materialized directory link points *at* its
+///     source, so following it would make every normal link removal look like
+///     a self-deletion and refuse it. What matters is where the link object
+///     itself sits, so only the parent is canonicalized and the file name is
+///     re-appended.
+///   - For a **real file** at `dest`, both sides are canonicalized in full.
+///     Following is required here, not merely harmless: the dangerous input
+///     is a declared *source* that is a link into the destination, which only
+///     full resolution exposes. Canonicalizing also normalizes case, so a
+///     case-insensitive filesystem cannot make one object look like two.
+///
+/// Neither arm may answer "separate" by default. Where identity cannot be
+/// established the answer is [`Ownership::Undecidable`] and the caller
+/// refuses: a question that was not answered is never grounds for a deletion,
+/// the same asymmetry `apply`'s prune already applies to a source it cannot
+/// stat. The one failure that *is* decidable is a destination whose parent
+/// does not exist — nothing can be there, so it cannot be the source, and it
+/// is reported separate so the ordinary "not present" path handles it.
+fn ownership(source: &Path, dest: &Path, dest_is_link: bool) -> Ownership {
+    // Cheap and exact: the same path is the same object, whatever either one
+    // resolves to.
+    if source == dest {
+        return Ownership::TheSourceItself;
+    }
+
+    let resolve = |path: &Path| -> io::Result<PathBuf> {
+        if dest_is_link {
+            let parent = match path.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent,
+                // A bare file name resolves against the working directory.
+                _ => Path::new("."),
+            };
+            let name = path.file_name().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{} has no final component", path.display()),
+                )
+            })?;
+            Ok(std::fs::canonicalize(parent)?.join(name))
+        } else {
+            std::fs::canonicalize(path)
+        }
+    };
+
+    let dest_id = match resolve(dest) {
+        Ok(id) => id,
+        // Nothing is there to be the source. `decide` reports it absent.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ownership::Separate,
+        Err(e) => {
+            return Ownership::Undecidable(format!(
+                "could not establish whether {} is a copy or the declared \
+                 source itself: {e}; nothing was removed.",
+                dest.display()
+            ));
+        }
+    };
+    // The caller has already confirmed the source exists, so a failure here
+    // is genuinely undecidable rather than a plain absence.
+    let source_id = match resolve(source) {
+        Ok(id) => id,
+        Err(e) => {
+            return Ownership::Undecidable(format!(
+                "could not resolve the declared source {} to compare it \
+                 against {}: {e}; nothing was removed.",
+                source.display(),
+                dest.display()
+            ));
+        }
+    };
+
+    if source_id == dest_id {
+        Ownership::TheSourceItself
+    } else {
+        Ownership::Separate
+    }
+}
+
+/// What [`ownership`] concluded.
+enum Ownership {
+    /// A distinct artifact. Removal is about this tool's own output.
+    Separate,
+    /// The destination and the declared source are one object. Removing it
+    /// would delete the canonical copy.
+    TheSourceItself,
+    /// Identity could not be established. The string is the user-facing
+    /// reason, printed verbatim.
+    Undecidable(String),
+}
+
+impl Ownership {
+    /// The refusal this conclusion implies, or `None` to proceed.
+    fn refusal(self, dest: &Path, source: &Path) -> Option<String> {
+        match self {
+            Ownership::Separate => None,
+            Ownership::TheSourceItself => Some(format!(
+                "{} and the declared source {} are the same object on disk, so \
+                 removing it would delete the canonical copy rather than a \
+                 materialized one; nothing was removed. Point this target's \
+                 `dest` somewhere other than the source tree, or stop \
+                 declaring an entry that links back into `dest`.",
+                dest.display(),
+                source.display()
+            )),
+            Ownership::Undecidable(reason) => Some(reason),
+        }
+    }
+}
+
 /// Decide what one destination is, and therefore whether it may be removed.
 ///
 /// `source` is `None` only for a `link` entry whose declared source has since
-/// been deleted — see [`plan_link_entry`].
+/// been deleted — see [`plan_link_entry`]. Nothing can then collide with it,
+/// so the ownership question does not arise.
 fn decide(dest: &Path, source: Option<&Path>) -> Decision {
     match classify(dest) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Decision::Absent,
@@ -574,12 +797,21 @@ fn decide(dest: &Path, source: Option<&Path>) -> Decision {
             dest.display()
         )),
         // Removing a link destroys nothing — `remove_link` unlinks the link
-        // object itself and never traverses it — so where it points cannot
-        // change this answer, and no target comparison is made. This holds
-        // for a `copy` entry's destination too: `apply` already treats a link
-        // found at one as satisfying that entry (`apply::is_same`), so a link
-        // there is this tool's to clear either way.
-        Ok(LinkClass::DirLink | LinkClass::FileLink) => Decision::RemoveLink,
+        // object itself and never traverses it — so *where it points* cannot
+        // change this answer, and no target comparison is made. What can
+        // change it is the link object being the declared source entry
+        // itself, which is why the ownership check below deliberately does
+        // not dereference the final component. This holds for a `copy`
+        // entry's destination too: `apply` already treats a link found at one
+        // as satisfying that entry (`apply::is_same`), so a link there is
+        // this tool's to clear either way.
+        Ok(LinkClass::DirLink | LinkClass::FileLink) => match source {
+            Some(source) => match ownership(source, dest, true).refusal(dest, source) {
+                Some(reason) => Decision::Refused(reason),
+                None => Decision::RemoveLink,
+            },
+            None => Decision::RemoveLink,
+        },
         Ok(LinkClass::NotALink) => decide_over_real_data(dest, source),
     }
 }
@@ -630,6 +862,14 @@ fn decide_over_real_data(dest: &Path, source: Option<&Path>) -> Decision {
             dest.display()
         ));
     };
+
+    // Ownership before content, and the order is the fix for a shipped
+    // data-loss bug rather than a stylistic preference: `has_identical_bytes`
+    // returns `true` for a file compared against itself, so asking it first
+    // means a destination that *is* the source reads as a removable copy.
+    if let Some(reason) = ownership(source, dest, false).refusal(dest, source) {
+        return Decision::Refused(reason);
+    }
 
     if has_identical_bytes(source, dest) {
         Decision::RemoveCopy
@@ -730,6 +970,58 @@ fn remove_one(removal: &PlannedRemoval) -> io::Result<Option<String>> {
         Err(e) => return Err(e),
     };
 
+    // Re-walk the destination's own path before touching it, so the
+    // intermediate components are checked against the filesystem as it is
+    // *now* rather than as `plan` found it. Without this, only the final
+    // component was re-classified here, and a directory somewhere above it
+    // that became a link after planning would be resolved straight through.
+    //
+    // This narrows the window rather than closing it — genuinely closing a
+    // TOCTOU needs handle-based traversal (`openat` and friends), which is
+    // not something this project has anywhere. `apply`'s write path has the
+    // same open window, and the consistent fix belongs there too; it is out
+    // of this task's scope. Narrowing it here anyway, because the cost is one
+    // call to a function that already exists and this is the path that
+    // *deletes*.
+    let Ok(rel) = removal.dest.strip_prefix(&removal.dest_root) else {
+        return Ok(Some(
+            "internal error: its destination is not inside the target root it \
+             was resolved from"
+                .to_string(),
+        ));
+    };
+    match resolve_removal_dest(&removal.dest_root, &removal.declared, rel) {
+        Ok(again) if again == removal.dest => {}
+        Ok(_) => {
+            return Ok(Some(
+                "its path no longer resolves where it did when this run was \
+                 planned; refusing to remove it"
+                    .to_string(),
+            ));
+        }
+        Err(reason) => return Ok(Some(reason)),
+    }
+
+    // Ownership, re-established immediately before anything is touched and
+    // with the predicate matched to what is actually at the destination right
+    // now — not to what the plan expected to find there.
+    //
+    // Re-checking is not what makes this safe on its own: both this and the
+    // plan-time check call the same function, so a *wrong* predicate would
+    // pass both, which is exactly how the original bug survived two layers of
+    // checking and a sabotage round. Sabotage tests the wiring; it cannot
+    // test the premise. What this second call buys is the ordinary TOCTOU
+    // narrowing — the destination becoming the source between plan and
+    // execute — and it is cheap.
+    if let Some(source) = removal.source.as_deref() {
+        let dest_is_link = matches!(class, LinkClass::DirLink | LinkClass::FileLink);
+        if let Some(reason) =
+            ownership(source, &removal.dest, dest_is_link).refusal(&removal.dest, source)
+        {
+            return Ok(Some(reason));
+        }
+    }
+
     match (&removal.decision, class) {
         (Decision::RemoveLink, LinkClass::DirLink | LinkClass::FileLink) => {
             safelink::remove::remove_link(&removal.dest)?;
@@ -783,6 +1075,7 @@ fn refusal(target_name: &str, label: &str, reason: String) -> PlannedRemoval {
         label: label.to_string(),
         declared: label.to_string(),
         dest: PathBuf::new(),
+        dest_root: PathBuf::new(),
         source: None,
         decision: Decision::Refused(reason),
     }
