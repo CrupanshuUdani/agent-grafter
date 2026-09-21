@@ -70,7 +70,11 @@ const DENIED_CREDENTIAL_NAMES: &[&str] = &[
 
 #[derive(Debug)]
 pub enum ManifestError {
-    Io(std::io::Error),
+    /// The manifest file at this path could not be read. Carries the path
+    /// alongside the underlying I/O error so `Display` can name which file
+    /// was tried — without it, "No such file or directory" tells the user
+    /// nothing about what to create.
+    Io(PathBuf, std::io::Error),
     Parse(toml::de::Error),
     Invalid(String),
 }
@@ -78,7 +82,9 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ManifestError::Io(e) => write!(f, "could not read manifest: {e}"),
+            ManifestError::Io(path, e) => {
+                write!(f, "could not read manifest at {}: {e}", path.display())
+            }
             ManifestError::Parse(e) => write!(f, "could not parse manifest: {e}"),
             ManifestError::Invalid(msg) => write!(f, "invalid manifest: {msg}"),
         }
@@ -123,7 +129,8 @@ pub fn parse(toml_str: &str) -> Result<Manifest, ManifestError> {
 /// validation — is reported uniformly as `ManifestError`; the caller maps
 /// that to exit code 2 ("invalid usage or unparseable manifest").
 pub fn read(path: &Path) -> Result<Manifest, ManifestError> {
-    let text = std::fs::read_to_string(path).map_err(ManifestError::Io)?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| ManifestError::Io(path.to_path_buf(), e))?;
     parse(&text)
 }
 
@@ -219,7 +226,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.toml");
 
-        assert!(matches!(read(&path), Err(ManifestError::Io(_))));
+        assert!(matches!(read(&path), Err(ManifestError::Io(_, _))));
+    }
+
+    #[test]
+    fn missing_manifest_error_names_the_attempted_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.toml");
+
+        let err = read(&path).expect_err("missing manifest must error");
+        let message = err.to_string();
+        assert!(
+            message.contains(&path.display().to_string()),
+            "error message must name the attempted path, got: {message}"
+        );
     }
 
     #[test]

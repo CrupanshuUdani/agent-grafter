@@ -281,6 +281,22 @@ fn a_dry_run_and_a_real_run_differ_in_verb_and_in_effect() {
 }
 
 #[test]
+fn status_missing_manifest_error_names_the_attempted_path() {
+    // Part B: the manifest error must say which path it tried, not just
+    // the bare OS error, so onboarding failures are actionable.
+    let env = TestEnv::with_manifest("");
+    fs::remove_file(env.path().join("agent-grafter.toml")).expect("remove manifest");
+
+    let result = env.run(&["status"]);
+    result.assert_exit_code(2);
+    assert!(
+        result.stderr().contains("agent-grafter.toml"),
+        "error must name the attempted manifest path, got: {}",
+        result.stderr()
+    );
+}
+
+#[test]
 fn a_dry_run_reports_the_same_exit_code_a_real_run_would() {
     // A CI gate that runs `apply --dry-run` to detect refusals must see the
     // same code the real run would produce, or dry-run is hiding the one
