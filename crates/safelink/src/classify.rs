@@ -19,6 +19,10 @@ pub enum LinkClass {
 
 #[cfg(windows)]
 pub fn classify(path: &Path) -> io::Result<LinkClass> {
+    // `file_attributes()` on the link's own metadata — see the dangling-
+    // junction reasoning below.
+    use std::os::windows::fs::MetadataExt;
+
     let path = &normalize_for_classification(path);
     // Order matters. Check the junction first: a junction's mode bits are
     // not a reliable discriminator, so `is_symlink()` must never be the
@@ -49,10 +53,34 @@ pub fn classify(path: &Path) -> io::Result<LinkClass> {
         return Ok(LinkClass::NotALink);
     }
 
-    // A symlink that is not a junction: decide dir vs file by what it points
-    // at. A broken symlink cannot be a directory link we are responsible for,
-    // so classify it as a file link — `remove_file` is the correct primitive
-    // for it either way.
+    // Ask the LINK ITSELF whether it is a directory before asking its target.
+    //
+    // A *dangling* junction reaches this point rather than returning early
+    // above: `junction::exists` answers `Ok(false)` for one, because it calls
+    // `Path::exists()` internally and that follows the reparse point to a
+    // target which is no longer there. The object on disk is still a
+    // directory carrying a reparse point, and on Windows `remove_file`
+    // against a directory fails with `ERROR_ACCESS_DENIED` (5) — so
+    // classifying it by its missing target got the removal primitive wrong
+    // and made cleaning up after a deleted source impossible.
+    //
+    // `symlink_metadata` describes the link, not the target, so its
+    // `FILE_ATTRIBUTE_DIRECTORY` bit is still correct once the target is
+    // gone. Live junctions never get here (handled above); this decides
+    // dangling junctions and dangling directory symlinks, both of which
+    // `remove_dir` unlinks without descending.
+    //
+    // Found by the `windows-latest` CI job, not locally: on POSIX
+    // `remove_file` unlinks a dangling symlink of either kind, so the whole
+    // divergence is invisible on Linux. Global Constraint 6, again.
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    if md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Ok(LinkClass::DirLink);
+    }
+
+    // A symlink whose own attributes say "not a directory": decide by what it
+    // points at, and treat an unresolvable target as a file link, for which
+    // `remove_file` is the correct primitive.
     match std::fs::metadata(path) {
         Ok(target_md) if target_md.is_dir() => Ok(LinkClass::DirLink),
         _ => Ok(LinkClass::FileLink),
