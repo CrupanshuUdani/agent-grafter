@@ -297,6 +297,50 @@ fn status_missing_manifest_error_names_the_attempted_path() {
 }
 
 #[test]
+fn help_subcommand_and_help_flag_produce_identical_output_and_exit_0() {
+    // `disable_help_subcommand` used to suppress clap's own `help`
+    // subcommand entirely; with it removed, `help` and `--help` must both
+    // route through the same success path and print the same text.
+    let env = TestEnv::with_manifest("");
+    let via_subcommand = env.run(&["help"]);
+    via_subcommand.assert_success();
+    let via_flag = env.run(&["--help"]);
+    via_flag.assert_success();
+
+    assert_eq!(
+        via_subcommand.stdout(),
+        via_flag.stdout(),
+        "`help` and `--help` must print identical text"
+    );
+}
+
+#[test]
+fn help_for_a_subcommand_exits_0() {
+    let env = TestEnv::with_manifest("");
+    env.run(&["help", "apply"]).assert_success();
+}
+
+#[test]
+fn an_unrecognized_subcommand_exits_2_not_0() {
+    // The distinction the exit-code contract depends on: a genuine parse
+    // failure is code 2 (invalid usage), never the 0 that `help`/`--help`
+    // map to, even though both flow through the same `try_parse` error
+    // path in `run()`.
+    let env = TestEnv::with_manifest("");
+    env.run(&["not-a-real-subcommand"]).assert_exit_code(2);
+}
+
+#[test]
+fn there_is_no_explain_subcommand() {
+    // Part A: `explain` is retired outright, not aliased or hidden. Exit
+    // code 2 is the load-bearing contract here (clap's own wording for an
+    // unrecognized subcommand is not part of this crate's API and may
+    // change across clap versions).
+    let env = TestEnv::with_manifest("");
+    env.run(&["explain"]).assert_exit_code(2);
+}
+
+#[test]
 fn a_dry_run_reports_the_same_exit_code_a_real_run_would() {
     // A CI gate that runs `apply --dry-run` to detect refusals must see the
     // same code the real run would produce, or dry-run is hiding the one

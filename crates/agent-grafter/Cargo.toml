@@ -14,6 +14,20 @@ safelink = { path = "../safelink" }
 [dev-dependencies]
 tempfile = "3"
 
+# Only used by the `examples/gen-manpage.rs` generator (packaging-time only,
+# not the shipped `agent-grafter` binary — see that example's doc comment).
+# A plain `dev-dependency` + `examples/` file, not a `[[bin]]`, so a
+# consumer's `cargo install agent-grafter` never installs a second,
+# generically-named `gen-manpage` binary alongside the real CLI: `cargo
+# install` ignores `examples/` and dev-dependencies entirely. Unlike an
+# optional dependency behind a Cargo feature (the previous approach here),
+# this still gets compiled — and can fail — under a plain `cargo build
+# --all-targets` / `cargo test` / `cargo clippy --all-targets`, so a broken
+# generator cannot go unnoticed in CI. MIT OR Apache-2.0, rust-version 1.85,
+# under this workspace's 1.88 MSRV. Its only dependency this workspace
+# lacked, `roff` 1.1.1, is also MIT OR Apache-2.0.
+clap_mangen = "0.3.3"
+
 [target.'cfg(windows)'.dependencies]
 # Already in Cargo.lock transitively via `safelink`'s `junction` dependency
 # at this same 0.61 line, so promoting it to a direct dependency here adds

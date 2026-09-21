@@ -10,14 +10,16 @@
 //! it checks every declared `copy` and `link` entry (by reusing
 //! `crate::apply::plan`, the same decision `apply` itself would reach),
 //! link-target drift `is_same()` cannot see, and each target's backup-root
-//! health — see `crate::doctor` for the full breakdown. `unlink` and `explain`
-//! remain stub subcommands that parse their own args and exit 0; a later task
-//! fills those in.
+//! health — see `crate::doctor` for the full breakdown. `unlink` remains a
+//! stub subcommand that parses its own args and exits 0; a later task fills
+//! it in. There is no `explain` subcommand: `apply --dry-run` already prints
+//! the full plan, and clap's own `help` subcommand (see below) covers the
+//! rest of what a stub named `explain` would have offered.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::manifest::{self, Manifest};
 
@@ -52,10 +54,18 @@ impl From<ExitCode> for std::process::ExitCode {
 const DEFAULT_MANIFEST: &str = "agent-grafter.toml";
 
 #[derive(Parser)]
-#[command(name = "agent-grafter", version, about, disable_help_subcommand = true)]
+#[command(name = "agent-grafter", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+/// The `clap::Command` this CLI parses with, exposed for tools that need the
+/// definition without going through `run()` — namely the man-page generator
+/// (`src/bin/gen-manpage.rs`), so the generated page can never drift from
+/// the real CLI the way a hand-written roff page could.
+pub fn build_cli() -> clap::Command {
+    Cli::command()
 }
 
 #[derive(Subcommand)]
@@ -68,8 +78,6 @@ enum Command {
     Doctor(DoctorArgs),
     /// Remove previously materialized entries. Stub in S1 (real behavior: S3).
     Unlink(UnlinkArgs),
-    /// Explain what a command would do without running it. Stub in S1.
-    Explain(ExplainArgs),
 }
 
 #[derive(clap::Args)]
@@ -96,19 +104,19 @@ struct DoctorArgs {
 #[derive(clap::Args)]
 struct UnlinkArgs {}
 
-#[derive(clap::Args)]
-struct ExplainArgs {}
-
 /// Parse arguments from the process environment and dispatch, returning
 /// the exit code the process should terminate with.
 pub fn run() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
-            // clap's own formatted usage/help/version text. `--help` and
-            // `--version` are not usage errors (clap reports them as one
-            // internally so it can print-and-exit early) — only a genuine
-            // parse failure should map to our code 2.
+            // clap's own formatted usage/help/version text. `--help`,
+            // `--version`, and — since `disable_help_subcommand` was removed
+            // — the `help` subcommand (and `help <SUBCOMMAND>`) all reach
+            // this same branch: clap reports each as an error internally so
+            // it can print-and-exit early, not because any of them are a
+            // usage mistake. Only a genuine parse failure should map to our
+            // code 2.
             let _ = err.print();
             return if err.exit_code() == 0 {
                 ExitCode::Success
@@ -123,7 +131,6 @@ pub fn run() -> ExitCode {
         Command::Status(args) => status(&args),
         Command::Doctor(args) => doctor(&args),
         Command::Unlink(_) => ExitCode::Success,
-        Command::Explain(_) => ExitCode::Success,
     }
 }
 
