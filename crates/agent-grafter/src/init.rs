@@ -449,10 +449,13 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
         return map_prompt_error(e);
     }
 
-    // R6: default Yes creating a new file, default No when --force would
-    // overwrite one -- Global Constraint 4, never inherit a destructive
-    // default.
-    let default_confirm = !args.force;
+    // R6: default Yes creating a new file, default No when this run would
+    // actually overwrite one -- Global Constraint 4, never inherit a
+    // destructive default. Keyed on whether the target exists right now,
+    // not merely on whether `--force` was passed: `--force` against a path
+    // with nothing there changes nothing about what this run does, so
+    // there is nothing to be cautious about defaulting to.
+    let default_confirm = !args.manifest_path.exists();
     let confirmed = match prompter.confirm("Write this manifest?", default_confirm) {
         Ok(b) => b,
         Err(e) => return map_prompt_error(e),
@@ -511,6 +514,59 @@ mod tests {
             force,
             print,
         }
+    }
+
+    /// Wraps a [`ScriptedPrompter`], recording the `initial` argument each
+    /// `confirm` call actually received. `Confirm(_)` in the script is what
+    /// the *answer* is; this is for pinning what `run` *asked*, independent
+    /// of the answer -- so a regression in a default value is caught even
+    /// though the scripted answer would otherwise mask it.
+    struct RecordingPrompter {
+        inner: ScriptedPrompter,
+        confirm_initials: Vec<bool>,
+    }
+
+    impl RecordingPrompter {
+        fn new(inner: ScriptedPrompter) -> Self {
+            RecordingPrompter {
+                inner,
+                confirm_initials: Vec::new(),
+            }
+        }
+    }
+
+    impl Prompter for RecordingPrompter {
+        fn intro(&mut self, t: &str) -> io::Result<()> {
+            self.inner.intro(t)
+        }
+        fn note(&mut self, m: &str) -> io::Result<()> {
+            self.inner.note(m)
+        }
+        fn text(&mut self, p: &str, d: Option<&str>, r: bool) -> io::Result<String> {
+            self.inner.text(p, d, r)
+        }
+        fn confirm(&mut self, prompt: &str, initial: bool) -> io::Result<bool> {
+            self.confirm_initials.push(initial);
+            self.inner.confirm(prompt, initial)
+        }
+        fn preview(&mut self, c: &str) -> io::Result<()> {
+            self.inner.preview(c)
+        }
+        fn outro(&mut self, m: &str) -> io::Result<()> {
+            self.inner.outro(m)
+        }
+    }
+
+    fn full_answer_script() -> ScriptedPrompter {
+        ScriptedPrompter::new(vec![
+            Answer::Text("."),
+            Answer::Text("notes.md"),
+            Answer::Text(""),
+            Answer::Text("example"),
+            Answer::Text("~/.example"),
+            Answer::Confirm(false),
+            Answer::Confirm(true),
+        ])
     }
 
     #[test]
@@ -905,51 +961,10 @@ mod tests {
 
     #[test]
     fn a_default_new_file_confirm_defaults_to_yes_and_force_defaults_to_no() {
-        // `Confirm(initial)` below is what the *script* answers, which is
-        // independent of the `initial` value `run` passes to the trait --
-        // this test instead pins the argument via a thin recording
-        // prompter, so a regression that flips R6's defaults is caught.
-        struct RecordingPrompter {
-            inner: ScriptedPrompter,
-            confirm_initials: Vec<bool>,
-        }
-        impl Prompter for RecordingPrompter {
-            fn intro(&mut self, t: &str) -> io::Result<()> {
-                self.inner.intro(t)
-            }
-            fn note(&mut self, m: &str) -> io::Result<()> {
-                self.inner.note(m)
-            }
-            fn text(&mut self, p: &str, d: Option<&str>, r: bool) -> io::Result<String> {
-                self.inner.text(p, d, r)
-            }
-            fn confirm(&mut self, prompt: &str, initial: bool) -> io::Result<bool> {
-                self.confirm_initials.push(initial);
-                self.inner.confirm(prompt, initial)
-            }
-            fn preview(&mut self, c: &str) -> io::Result<()> {
-                self.inner.preview(c)
-            }
-            fn outro(&mut self, m: &str) -> io::Result<()> {
-                self.inner.outro(m)
-            }
-        }
-
         let dir = tempfile::tempdir().unwrap();
 
         let new_path = dir.path().join("new.toml");
-        let mut new_prompter = RecordingPrompter {
-            inner: ScriptedPrompter::new(vec![
-                Answer::Text("."),
-                Answer::Text("notes.md"),
-                Answer::Text(""),
-                Answer::Text("example"),
-                Answer::Text("~/.example"),
-                Answer::Confirm(false),
-                Answer::Confirm(true),
-            ]),
-            confirm_initials: Vec::new(),
-        };
+        let mut new_prompter = RecordingPrompter::new(full_answer_script());
         run(&args(new_path, false, false), true, &mut new_prompter);
         assert_eq!(
             new_prompter.confirm_initials.last(),
@@ -959,23 +974,31 @@ mod tests {
 
         let force_path = dir.path().join("force.toml");
         std::fs::write(&force_path, "sentinel").unwrap();
-        let mut force_prompter = RecordingPrompter {
-            inner: ScriptedPrompter::new(vec![
-                Answer::Text("."),
-                Answer::Text("notes.md"),
-                Answer::Text(""),
-                Answer::Text("example"),
-                Answer::Text("~/.example"),
-                Answer::Confirm(false),
-                Answer::Confirm(true),
-            ]),
-            confirm_initials: Vec::new(),
-        };
+        let mut force_prompter = RecordingPrompter::new(full_answer_script());
         run(&args(force_path, true, false), true, &mut force_prompter);
         assert_eq!(
             force_prompter.confirm_initials.last(),
             Some(&false),
             "--force overwriting an existing file must default to No"
+        );
+    }
+
+    #[test]
+    fn force_against_a_nonexistent_manifest_defaults_the_confirm_to_yes() {
+        // The confirm's default is keyed on whether an overwrite would
+        // actually happen, not on whether --force was merely passed: with
+        // no file at the target path, --force changes nothing about what
+        // this run does, so there is nothing to be cautious about.
+        let dir = tempfile::tempdir().unwrap();
+        let force_path = dir.path().join("does-not-exist.toml");
+        let mut prompter = RecordingPrompter::new(full_answer_script());
+
+        run(&args(force_path, true, false), true, &mut prompter);
+
+        assert_eq!(
+            prompter.confirm_initials.last(),
+            Some(&true),
+            "--force against a path with nothing to overwrite must still default to Yes"
         );
     }
 }
