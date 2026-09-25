@@ -427,7 +427,9 @@ fn init_print_output_is_a_manifest_the_tool_itself_accepts() {
     let template = env.run(&["init", "--print"]).assert_success().stdout();
     env.write_manifest(&template);
 
-    // `status` with no `[targets.*]` and a `link` entry reports drift, not
+    // The template declares `link = ["memory/"]` against
+    // `[targets."example"]` (`dest = "~/.example"`), and `~/.example/memory`
+    // does not exist on this machine, so `status` reports drift rather than
     // an unparseable-manifest error — exit 3, not 2, is the proof the
     // template parsed.
     env.run(&["status"]).assert_exit_code(3);
