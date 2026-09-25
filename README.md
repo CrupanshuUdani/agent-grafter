@@ -1,5 +1,7 @@
 # agent-grafter
 
+[![CI](https://github.com/CrupanshuUdani/agent-grafter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CrupanshuUdani/agent-grafter/actions/workflows/ci.yml?query=branch%3Amain) [![musl static build](https://github.com/CrupanshuUdani/agent-grafter/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/CrupanshuUdani/agent-grafter/actions/workflows/docker.yml?query=branch%3Amain) [![Linux: CI-tested](https://img.shields.io/badge/Linux-tested-success?logo=linux&logoColor=white)](https://github.com/CrupanshuUdani/agent-grafter/actions/workflows/ci.yml?query=branch%3Amain) [![macOS: CI-tested](https://img.shields.io/badge/macOS-tested-success?logo=apple&logoColor=white)](https://github.com/CrupanshuUdani/agent-grafter/actions/workflows/ci.yml?query=branch%3Amain) [![Windows: CI-tested](https://img.shields.io/badge/Windows-tested-success?logo=windows&logoColor=white)](https://github.com/CrupanshuUdani/agent-grafter/actions/workflows/ci.yml?query=branch%3Amain) [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-blue?logo=rust)](#building-from-source) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+
 **Alpha.** The manifest format may still change before 1.0. Pin a commit if
 you depend on it.
 

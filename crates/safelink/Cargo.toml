@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Explicit, non-guessing link materialization for Windows, macOS and Linux"
+keywords = ["symlink", "junction", "ntfs", "filesystem", "windows"]
+categories = ["filesystem", "os::windows-apis", "os::unix-apis"]
 
 [dependencies]
 # Runtime dep, not dev-only: `RealProbe` (Task 6) uses it outside #[cfg(test)].

@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "CLI that materializes declared AI agent config/state file pairs across Windows/macOS/Linux"
+keywords = ["ai-agents", "dotfiles", "symlink", "junction", "cli"]
+categories = ["command-line-utilities", "config", "development-tools", "filesystem"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
