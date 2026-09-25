@@ -3,6 +3,33 @@
 **Alpha.** The manifest format may still change before 1.0. Pin a commit if
 you depend on it.
 
+## The problem
+
+If you use an AI coding agent on more than one system (a dual-boot laptop, a
+work and a home machine, or two agent tools side by side), its files drift
+apart. Instructions you improved in one place never reach the other. What
+the agent learned on Windows yesterday is missing when you boot into Linux
+today.
+
+The usual fix is to keep the files in one shared folder and symlink to it.
+On Windows that needs administrator rights or Developer Mode, which most
+people don't have switched on and many work machines don't allow.
+
+## The fix
+
+You write one small file listing what to share and where it should go.
+agent-grafter then puts those files in place on each system. Files you
+write yourself, like instructions and skills, are copied, so each system
+keeps working on its own. Files the agent writes, like its memory, are
+linked, so every system reads and writes the same copy. On Windows the links
+are directory junctions, which any user can create.
+
+It never deletes through a link, backs up anything it overwrites, and can
+show you every change before making it. [EXAMPLES.md](EXAMPLES.md) walks
+through real setups.
+
+## How it works
+
 agent-grafter is a CLI that materializes a declared set of AI-agent
 config/state files onto one or more targets (agent harnesses, machines,
 whatever paths you name) — as copies, or as live links — from a single TOML
@@ -218,6 +245,8 @@ compiled-in dependencies (notably `junction`, MIT).
 
 ## More
 
+- [`EXAMPLES.md`](EXAMPLES.md) — dual-boot, two agents sharing memory, a
+  locked-down work laptop, a config repo in git, and how to undo it all.
 - [`FAQ.md`](FAQ.md) — junctions vs. symlinks, admin rights, unmounted
   drives, Cursor/Copilot/Hermes support, and more.
 - [`COMPARISON.md`](COMPARISON.md) — honest comparison against `chezmoi` and
