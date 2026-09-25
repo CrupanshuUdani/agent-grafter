@@ -144,6 +144,10 @@ pub struct ScriptedPrompter {
     /// Every `preview` call this prompter received, in order -- tests assert
     /// against this instead of capturing real stdout.
     pub shown: Vec<String>,
+    /// Every `outro` message this prompter received, in order -- this is
+    /// where the "close by telling the user what to run next" checklist
+    /// item lives, so it needs the same kind of test-visible record.
+    pub outros: Vec<String>,
 }
 
 impl ScriptedPrompter {
@@ -151,6 +155,7 @@ impl ScriptedPrompter {
         ScriptedPrompter {
             answers: answers.into(),
             shown: Vec::new(),
+            outros: Vec::new(),
         }
     }
 
@@ -198,7 +203,8 @@ impl Prompter for ScriptedPrompter {
         Ok(())
     }
 
-    fn outro(&mut self, _message: &str) -> io::Result<()> {
+    fn outro(&mut self, message: &str) -> io::Result<()> {
+        self.outros.push(message.to_string());
         Ok(())
     }
 }
@@ -413,10 +419,21 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
     };
 
     match write_result {
-        Ok(()) => InitOutcome::Wrote {
-            path: args.manifest_path.clone(),
-            contents,
-        },
+        Ok(()) => {
+            // Closes the visual session `intro` opened, and is where the
+            // checklist's "close by telling the user what to run next"
+            // lives -- behind the trait, like everything else here, so it
+            // is asserted in a test rather than only ever eyeballed. Its
+            // own failure does not change the outcome: the manifest is
+            // already written by this point, and a chrome-closing hiccup
+            // must not report a write that happened as an error.
+            let _ = prompter
+                .outro("Run `agent-grafter apply --dry-run` next to preview what it would do.");
+            InitOutcome::Wrote {
+                path: args.manifest_path.clone(),
+                contents,
+            }
+        }
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             InitOutcome::AlreadyExists(args.manifest_path.clone())
         }
@@ -561,6 +578,16 @@ mod tests {
         assert!(contents.contains("memory/"));
         assert!(contents.contains("[targets.\"agent-a\"]"));
         assert!(contents.contains("[targets.\"agent-b\"]"));
+        assert_eq!(
+            prompter.outros.len(),
+            1,
+            "a successful write must close the session with exactly one outro"
+        );
+        assert!(
+            prompter.outros[0].contains("apply --dry-run"),
+            "the closing message must tell the user what to run next, got: {:?}",
+            prompter.outros[0]
+        );
     }
 
     #[test]
@@ -638,6 +665,10 @@ mod tests {
 
         assert!(matches!(outcome, InitOutcome::Cancelled));
         assert!(!path.exists());
+        assert!(
+            prompter.outros.is_empty(),
+            "a declined write must not close the session as if it had succeeded"
+        );
     }
 
     #[test]

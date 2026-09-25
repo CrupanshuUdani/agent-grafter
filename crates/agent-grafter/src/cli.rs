@@ -270,8 +270,10 @@ fn init(args: &InitArgs) -> ExitCode {
             ExitCode::Success
         }
         crate::init::InitOutcome::Wrote { path, .. } => {
+            // The "what to run next" hint is delivered by `crate::init::run`
+            // itself, via the prompter's `outro` -- see that function's doc
+            // comment. This is only the plain, scriptable confirmation.
             println!("wrote {}", path.display());
-            println!("Run `agent-grafter apply --dry-run` next to preview what it would do.");
             ExitCode::Success
         }
         crate::init::InitOutcome::NonInteractive => {
