@@ -1498,7 +1498,11 @@ pub(crate) fn resolved_source(manifest: &Manifest, manifest_dir: &Path) -> PathB
 /// Recursion follows *real* directories only — a directory symlink inside the
 /// source is a traversal leaf, both because descending one could loop forever
 /// and because `safelink` treats every link as a boundary (Constraint 5).
-fn collect_files(dir: &Path, prefix: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+///
+/// Shared with [`crate::unlink`], which expands a declared `copy` directory
+/// the same way, so the two commands cannot disagree about which destination
+/// paths this tool owns.
+pub(crate) fn collect_files(dir: &Path, prefix: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir)?
         .map(|e| e.map(|e| e.file_name().into()))
         .collect::<io::Result<_>>()?;
@@ -1680,7 +1684,12 @@ fn is_same(entry: &Entry) -> bool {
 /// edited file of the same length unchanged, and modification times are not
 /// preserved by `copy_atomic` (nor comparable across the volumes this tool
 /// exists to span). Content is the only question that has a correct answer.
-fn has_identical_bytes(source: &Path, dest: &Path) -> bool {
+///
+/// Shared with [`crate::unlink`], where the same question — is this content
+/// still held by the source — is the only thing that makes a materialized
+/// copy safe to delete. Reused rather than restated: two byte comparisons
+/// that could drift apart is one more than this project should have.
+pub(crate) fn has_identical_bytes(source: &Path, dest: &Path) -> bool {
     let Ok(dest_meta) = std::fs::symlink_metadata(dest) else {
         return false;
     };

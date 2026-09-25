@@ -16,6 +16,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # This project's entire Windows CI strategy rests on the documented
+      # fact that GitHub's windows-latest runners run elevated with UAC
+      # disabled (Engine Plan Global Constraint 7 / this plan's Global
+      # Constraint 5/6). Every doc comment claiming "CI cannot validate
+      # standard-user behavior" is only true because CI is elevated — if
+      # GitHub ever changes that default, this project's Windows coverage
+      # story silently inverts (CI starts testing the standard-user path
+      # and never the elevated one) and nothing today would notice. Fail
+      # loudly instead of letting that happen quietly.
+      - name: Assert the Windows runner is running elevated
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+          $isElevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          if (-not $isElevated) {
+            Write-Host "::error::GitHub's windows-latest runner is documented to run elevated with UAC disabled; this run did not. This project's entire Windows CI strategy (Engine Plan Global Constraint 7) assumes elevation -- every doc comment claiming 'CI exercises the elevated path only, not standard-user behavior' depends on that assumption. If this has genuinely changed, every one of those doc comments needs re-auditing before this check can simply be updated to match the new reality."
+            exit 1
+          }
+          Write-Host "Confirmed: runner is elevated, as this project's Windows CI strategy assumes."
 
       # Opt-in exFAT test volume — Windows only. The fs_capability tests skip
       # loudly when SAFELINK_EXFAT_TEST_DIR is absent, so a failure here does
@@ -78,7 +102,42 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  cargo-deny:
+    name: cargo deny (licenses + advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Checks licenses, security advisories (RustSec), banned/duplicate
+      # crates, and dependency sources against deny.toml at the workspace
+      # root. The license allow-list there was built from a real
+      # `cargo deny check licenses` run against this dependency tree, not
+      # guessed -- see deny.toml's own comments for what's actually present
+      # and why each entry is there.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  msrv:
+    name: msrv (check + test on 1.88.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the exact version determined and verified locally (see
+      # README.md's Requirements section and this task's report): the
+      # edition-2024 floor alone is 1.85.0, but this codebase's if-let
+      # chains (e.g. crates/agent-grafter/src/manifest.rs) require the
+      # let-chains feature stabilized in 1.88.0. `@stable` would not catch
+      # a future MSRV regression -- only pinning the actual floor does.
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      # `--locked` keeps this job's result tied to the committed
+      # dependency set rather than the resolver picking newer, possibly
+      # higher-MSRV versions at CI time for unrelated reasons.
+      - name: Check (MSRV floor)
+        run: cargo check --workspace --all-targets --locked
+      - name: Test (MSRV floor)
+        run: cargo test --workspace --locked

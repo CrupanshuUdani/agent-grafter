@@ -1,0 +1,22 @@
+# Keep the Docker build context to what the Dockerfile actually COPYs
+# (Cargo.toml, Cargo.lock, crates/). CI runs on a fresh checkout so the cost
+# there is small, but the Dockerfile's own documented local invocation
+# (`docker buildx build ... .`) would otherwise ship everything below to the
+# daemon -- including, from a working checkout, gigabytes of build output and
+# local agent scratch state that has no business in a build context.
+
+# Rust build output -- regenerated inside the builder stage anyway.
+target/
+
+# Git history: not read by the build, and the largest thing here after target/.
+.git/
+
+# Local agent/tooling state, none of it an input to this build. `.claude/`
+# in particular contains `worktrees/`, i.e. entire nested checkouts.
+.claude/
+.superpowers/
+graft/
+
+# Docker's own files: not inputs to the build they configure.
+Dockerfile
+.dockerignore
