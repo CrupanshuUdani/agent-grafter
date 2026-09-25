@@ -223,6 +223,24 @@ const PLACEHOLDER_SOURCE: &str = ".";
 /// `crates/agent-grafter/agrafter.toml`), so this is the one place that
 /// shape is written, shared by both `--print`'s fixed placeholders and a
 /// real interactive answer.
+/// Renders `value` as a TOML string literal, via the `toml` crate's own
+/// serialization rather than `format!("{value:?}")`. Rust's `Debug`
+/// escaping for `str` is close to TOML's basic-string grammar but not
+/// identical -- e.g. a control character becomes a braced, variable-width
+/// `\u{X...}` under Rust's rules, which is not valid TOML escape syntax at
+/// all (TOML wants a fixed-width, unbraced `\uXXXX`). Going through
+/// `toml::Value` guarantees whatever comes out is TOML `--` including its
+/// choice of a literal (single-quoted) string when that avoids escaping
+/// altogether, which is also correct TOML.
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
+/// Same as [`toml_string`], for a `copy`/`link` array of strings.
+fn toml_string_array(values: &[String]) -> String {
+    toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect()).to_string()
+}
+
 fn render_manifest(
     source: &str,
     copy: &[String],
@@ -237,21 +255,21 @@ fn render_manifest(
     );
 
     out.push_str("# Where your declared entries live, relative to this file.\n");
-    out.push_str(&format!("source = {source:?}\n\n"));
+    out.push_str(&format!("source = {}\n\n", toml_string(source)));
 
     out.push_str(
         "# Copied into each target -- safe for entries a shared volume might not\n\
          # always be mounted, or that must not be silently shared.\n",
     );
-    out.push_str(&format!("copy = {copy:?}\n\n"));
+    out.push_str(&format!("copy = {}\n\n", toml_string_array(copy)));
 
     out.push_str("# Linked into each target: one copy, read and written by every target.\n");
-    out.push_str(&format!("link = {link:?}\n"));
+    out.push_str(&format!("link = {}\n", toml_string_array(link)));
 
     for (label, dest) in targets {
         out.push_str("\n# Target names are arbitrary labels you choose.\n");
-        out.push_str(&format!("[targets.{label:?}]\n"));
-        out.push_str(&format!("dest = {dest:?}\n"));
+        out.push_str(&format!("[targets.{}]\n", toml_string(label)));
+        out.push_str(&format!("dest = {}\n", toml_string(dest)));
     }
 
     out
@@ -587,6 +605,35 @@ mod tests {
     fn print_output_parses_as_a_valid_manifest() {
         let contents = placeholder_manifest();
         manifest::parse(&contents).expect("the --print template must parse");
+    }
+
+    #[test]
+    fn render_manifest_round_trips_values_containing_quotes_and_backslashes() {
+        // Rust's `{:?}` escaping for strings is not guaranteed to match
+        // TOML's own string-escape grammar for every input: Rust's
+        // `char::escape_debug` renders a control character as a braced,
+        // variable-length `\u{X...}` (e.g. `\u{b}` for vertical tab), which
+        // is not valid TOML escape syntax at all (TOML wants a fixed-width
+        // `\uXXXX`, unbraced) -- so a `{:?}`-rendered value containing one
+        // produces TOML that fails to parse. Rendering must go through the
+        // `toml` crate's own serialization instead.
+        let source = ".";
+        let copy = vec!["odd\"name.md".to_string()];
+        let link: Vec<String> = vec![];
+        let targets = vec![(
+            "weird \"label\"".to_string(),
+            "C:\\Users\\test\\path\u{b}".to_string(),
+        )];
+
+        let contents = render_manifest(source, &copy, &link, &targets);
+        let manifest = manifest::parse(&contents).expect("must parse the rendered TOML");
+
+        assert_eq!(manifest.copy, vec!["odd\"name.md".to_string()]);
+        let target = manifest
+            .targets
+            .get("weird \"label\"")
+            .expect("the quoted target label must round-trip as a key");
+        assert_eq!(target.dest, PathBuf::from("C:\\Users\\test\\path\u{b}"));
     }
 
     #[test]
