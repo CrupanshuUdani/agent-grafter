@@ -260,4 +260,6 @@ compiled-in dependencies (notably `junction`, MIT).
   vulnerability.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): running the test suite, and what
   evidence a Windows-only change needs.
+- [`FUTURE.md`](FUTURE.md): what's not done yet, what might come next, and
+  what's deliberately out of scope.
 - [`CHANGELOG.md`](CHANGELOG.md).
