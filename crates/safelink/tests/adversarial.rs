@@ -1,4 +1,4 @@
-//! Task 12: the adversarial input matrix.
+//! Adversarial input matrix: hostile filesystem scenarios.
 //!
 //! Every case below is a way a real filesystem can hand the engine something
 //! hostile, and the project's entire claim is that it never destroys a source
@@ -13,15 +13,14 @@
 //! not one. Each such row carries a doc comment naming the existing test it
 //! deliberately overlaps with and why it is re-asserted here.
 //!
-//! PLATFORM HONESTY (Global Constraint 6): the self-referential-link,
-//! own-parent-link, and dangling-link tests are `#[cfg(unix)]`-only. Creating a self-referential
+//! PLATFORM HONESTY: the self-referential-link, own-parent-link, and
+//! dangling-link tests are `#[cfg(unix)]`-only. Creating a self-referential
 //! junction on Windows is a separate exercise, and gating only the setup line
 //! would leave the assertions running against a path that does not exist, so
 //! the test would fail on Windows for the wrong reason. The cross-volume test
 //! is `#[cfg(windows)]`-only (POSIX symlinks already allow cross-filesystem
-//! linking trivially and this was never in question there). Neither can be
-//! exercised for real on this Linux machine -- only the `windows-latest` CI
-//! job is evidence for them.
+//! linking trivially). Neither can be exercised for real on this Linux machine
+//! — only the `windows-latest` CI job is evidence for them.
 
 use safelink::capability::ForcedProbe;
 use safelink::classify::{LinkClass, classify};
@@ -50,12 +49,11 @@ use std::os::unix::fs::PermissionsExt;
 /// either way.
 ///
 /// PLATFORM NOTE: this test is `#[cfg(unix)]`-only. Windows does not allow
-/// creating a junction to a non-existent target -- `junction::create` fails
-/// with "Access is denied" (code 5) when the target doesn't exist. On Windows,
-/// the dangling-link case is therefore not testable via this mechanism; the
-/// POSIX path covers the property. This matches Global Constraint 6: the
-/// project states which platforms a claim covers rather than letting a green
-/// check imply all of them.
+/// creating a junction to a non-existent target — `junction::create` fails
+/// with "Access is denied" when the target doesn't exist. On Windows, the
+/// dangling-link case is therefore not testable via this mechanism; the
+/// POSIX path covers the property. We explicitly state which platforms a
+/// claim covers rather than letting a green check imply all of them.
 #[cfg(unix)]
 #[test]
 fn a_dangling_link_is_classified_and_removed_without_erroring_on_its_target() {
@@ -374,7 +372,7 @@ fn surfaces_the_os_error_unchanged_when_destination_is_read_only() {
 /// Junctions on Windows allow cross-volume linking, unlike POSIX symlinks
 /// which already do trivially. Both same-volume and cross-volume targets must
 /// succeed. This test is `#[cfg(windows)]`-only and cannot execute on this
-/// Linux machine -- see Global Constraint 6.
+/// Linux machine — platform-specific claims are tested only on their platform.
 #[cfg(windows)]
 #[test]
 fn creates_links_for_both_same_volume_and_cross_volume_targets() {

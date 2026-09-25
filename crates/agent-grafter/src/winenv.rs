@@ -4,8 +4,8 @@
 //! Injectable on purpose, mirroring `safelink::capability::SymlinkProbe` /
 //! `RealProbe` / `ForcedProbe` and the reasoning that file documents: the
 //! real answer can only be observed on an actual Windows machine (this dev
-//! machine is Linux, and GitHub's Windows runners are documented to run
-//! elevated with UAC disabled -- see Global Constraint 7), so the
+//! machine is Linux, and GitHub's Windows runners run with elevated
+//! privileges and UAC disabled), so the
 //! *reporting* logic that formats these two facts into `doctor`'s output
 //! must be testable independently of the real OS query, via a forced
 //! implementation.
@@ -201,14 +201,12 @@ mod tests {
     /// `real_probe_is_callable_and_does_not_panic`, and for the same reason:
     /// this dev machine is Linux and cannot exercise `RealWindowsFacts` at
     /// all, and even a Windows CI runner cannot validate the "not elevated"
-    /// branch (Global Constraint 7: GitHub's Windows runners are documented
-    /// to run elevated with UAC disabled). This asserts only that the real
-    /// query is callable and does not panic -- nothing about the actual
-    /// values, which are environment-dependent and would be a falsehood to
-    /// assert either way here.
+    /// branch (CI runners run with elevated privileges and UAC disabled).
+    /// This asserts only that the real query is callable and does not panic —
+    /// nothing about the actual values, which are environment-dependent.
     ///
-    /// Per Constraint 7 and the task report this module ships with: this is
-    /// unverified on a real Windows machine until confirmed there (Gate B).
+    /// This remains unverified on a real Windows machine until confirmed
+    /// there manually.
     #[cfg(windows)]
     #[test]
     fn real_facts_are_callable_and_do_not_panic() {

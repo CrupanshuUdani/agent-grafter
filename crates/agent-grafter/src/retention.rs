@@ -18,9 +18,8 @@
 //! rule gets broken by accident, so the filter happens *before* the sort.
 //!
 //! *Removal is hand-rolled and classify-gated.* Emptying a backup directory
-//! needs recursive deletion, and this project's Global Constraint 3 forbids
-//! the standard library's recursive-delete helper outright, here as everywhere
-//! else. [`remove_backup_dir`] therefore walks the tree itself, asks
+//! needs recursive deletion. We never use the standard library's recursive-delete
+//! helper. [`remove_backup_dir`] therefore walks the tree itself, asks
 //! `safelink::classify` about every single entry before touching it, unlinks
 //! plain files with `std::fs::remove_file`, and removes each directory with
 //! `std::fs::remove_dir` — which fails on a non-empty directory, so a refusal
@@ -144,9 +143,8 @@ pub fn plan_retention(
 /// Remove one backup directory and everything under it.
 ///
 /// Hand-rolled rather than delegating to the standard library's recursive
-/// delete, which Global Constraint 3 forbids anywhere in this project: that
-/// helper follows whatever it finds, and this tool never takes that risk with
-/// a user's disk even inside a directory it believes it wrote itself.
+/// delete. That helper follows whatever it finds; we never take that risk with
+/// a user's disk, even inside a directory we believe we wrote ourselves.
 ///
 /// Every object — the root included — is put to `safelink::classify` before
 /// anything happens to it. A link found anywhere in the tree stops the

@@ -1,4 +1,4 @@
-//! Enforces Global Constraint 3 as a test, not just as a code comment.
+//! Enforces a critical safety rule as a test, not just as a code comment.
 //!
 //! Why this exists, and why the flagship safety test is not enough:
 //!

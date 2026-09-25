@@ -423,7 +423,7 @@ fn a_directory_link_standing_in_for_a_copied_directory_is_never_deleted_through(
 }
 
 // ---------------------------------------------------------------------------
-// Constraint 3: `--dry-run`, and the exit-code parity that makes it useful.
+// `--dry-run` honesty and the exit-code parity that makes it useful.
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -131,9 +131,8 @@ fn leaves_a_stale_link_to_the_missing_source_untouched() {
         "precondition: the link must be live before the volume is unmounted"
     );
 
-    // "Unmount the volume." `remove_dir_all` is forbidden in src/ (Global
-    // Constraint 3) but is the honest way to simulate this in a test — and it
-    // is aimed at the source, not through the link.
+    // "Unmount the volume." We use `remove_dir_all` only here in the test to
+    // simulate this — it is aimed at the source, not through any link.
     fs::remove_dir_all(&source).unwrap();
     assert!(!source.exists(), "precondition: source is now missing");
 

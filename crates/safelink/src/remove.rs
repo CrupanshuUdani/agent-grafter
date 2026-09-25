@@ -11,7 +11,7 @@ use crate::classify::{LinkClass, classify};
 ///
 /// This function must never call `std::fs::remove_dir_all`. It delegates to
 /// `remove_dir_link`, whose per-platform primitive unlinks the link object
-/// itself without descending into the target. See Global Constraints 3 and 9.
+/// itself without descending into the target.
 pub fn remove_link(path: &Path) -> io::Result<()> {
     match classify(path)? {
         LinkClass::NotALink => Err(io::Error::new(

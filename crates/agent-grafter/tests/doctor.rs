@@ -297,17 +297,16 @@ fn reports_a_linked_backup_root_as_drift() {
 }
 
 // ---------------------------------------------------------------------------
-// Task S4-2 follow-up: `PruneDecision::LeftInPlace` has two producers now,
-// and check 3 must tell them apart rather than treating both as the
-// deliberate, non-drift outcome the original (pre-S4-2) `LeftInPlace` was.
+// `PruneDecision::LeftInPlace` now has two producers and check 3 must tell
+// them apart rather than treating both as the deliberate, non-drift outcome.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn reports_a_stale_file_blocked_by_a_linked_backup_root_as_drift() {
-    // apply (Task S4-2) leaves a stale file in place, rather than pruning
-    // it, when its backup could only be filed through a linked backup root.
-    // That is genuinely something to fix -- unlike the other `LeftInPlace`
-    // producer below -- and check 3 must say so, not silently drop it.
+    // The tool leaves a stale file in place, rather than pruning it, when its
+    // backup could only be filed through a linked backup root. That is genuinely
+    // something to fix — unlike the other `LeftInPlace` producer below — and
+    // check 3 must say so, not silently drop it.
     let env = Env::new();
     env.write_source("modes/one.md", b"first mode");
     let manifest = env.write_manifest("copy = [\"modes\"]");
@@ -342,9 +341,9 @@ fn reports_a_stale_file_blocked_by_a_linked_backup_root_as_drift() {
 #[test]
 fn does_not_report_a_link_found_where_a_prune_candidate_was_expected_as_drift() {
     // The original `LeftInPlace` producer: a link sitting where a prune
-    // candidate would otherwise be. `apply` deliberately leaves it alone
-    // (Ruling D in `apply.rs`), and this remains a distinct, non-drift
-    // outcome -- the fix above must not widen check 3 to flag this too.
+    // candidate would otherwise be. `apply` deliberately leaves it alone,
+    // and this remains a distinct, non-drift outcome — the fix above must not
+    // widen check 3 to flag this too.
     let env = Env::new();
     env.write_source("modes/one.md", b"first mode");
     let manifest = env.write_manifest("copy = [\"modes\"]");

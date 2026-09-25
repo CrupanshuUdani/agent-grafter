@@ -1,4 +1,4 @@
-//! Enforces Global Constraint 3 as a test, not just as a code comment.
+//! Enforces a critical safety rule as a test, not just as a code comment.
 //!
 //! This mirrors `crates/safelink/tests/constraints.rs` — read that file's
 //! doc comment for the full "sabotage-tested" reasoning on why a
@@ -28,14 +28,10 @@
 //! currently flat, so this is not a functional gap today — but if it ever
 //! grows a subdirectory, files there would silently go unchecked.
 //!
-//! That "not a functional gap today" is no longer left as a claim. Task S8
-//! added `src/unlink.rs`, the module that does the most deleting in this
-//! crate, and "extend the scan to cover it" would otherwise be a change with
-//! no observable effect — the flat layout already covered it, so nobody would
-//! find out if that stopped being true. [`the_scan_covers_every_module_that_removes_things`]
-//! therefore asserts the scan's own file list, by name: move any of those
-//! modules into a subdirectory and the check fails loudly instead of quietly
-//! scanning one file fewer.
+//! That "not a functional gap today" is asserted explicitly by
+//! [`the_scan_covers_every_module_that_removes_things`], which asserts the
+//! scan's own file list by name: move any of those modules into a subdirectory
+//! and the check fails loudly instead of quietly scanning one file fewer.
 
 /// The call this project never makes. Comments and doc-comments legitimately
 /// name it, so they are stripped before checking rather than the word being

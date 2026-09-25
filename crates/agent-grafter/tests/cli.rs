@@ -42,10 +42,9 @@ impl TestEnv {
     }
 
     /// Lay out an env that `apply` can really act on: a `source/` directory
-    /// holding a declared `memory/` directory, and a real target root. Since
-    /// Task S3a, `apply` refuses a target root that does not exist and a
-    /// source that does not exist, so a fixture that omits either is only
-    /// ever testing the refusal path.
+    /// holding a declared `memory/` directory, and a real target root. The tool
+    /// refuses a target root that does not exist and a source that does not exist,
+    /// so a fixture that omits either is only ever testing the refusal path.
     fn with_real_source_and_target(body: &str) -> Self {
         let env = TestEnv::with_manifest("");
         fs::create_dir_all(env.path().join("source/memory")).expect("create source");
@@ -213,9 +212,9 @@ fn status_exits_3_when_no_targets_are_declared_at_all() {
 
 #[test]
 fn dry_run_still_reports_the_work_it_would_do_with_no_targets_declared() {
-    // Constraint 3: `--dry-run` must stay honest about what it would act on
-    // even when the manifest declares no `[targets.*]` at all — the listing
-    // must not silently disappear.
+    // `--dry-run` must stay honest about what it would act on even when the
+    // manifest declares no `[targets.*]` at all — the listing must not
+    // silently disappear.
     let env = TestEnv::with_manifest("link = [\"memory\"]");
     let out = env.run(&["apply", "--dry-run"]).stdout();
     assert!(
@@ -229,7 +228,7 @@ fn status_exits_0_when_the_declared_link_is_already_in_place() {
     let env = TestEnv::with_manifest("link = [\"memory\"]");
 
     // Build a real directory link with the engine itself (never reimplement
-    // link creation here — Global Constraint 5) and point a `[targets.*]`
+    // link creation here) and point a `[targets.*]`
     // entry's `dest` at its parent, so `status` resolves
     // `dest.join("memory")` to the link and finds it in sync. Use the
     // absolute path, as a TOML *literal* (single-quoted) string so a
@@ -260,10 +259,8 @@ fn status_exits_0_when_the_declared_link_is_already_in_place() {
 
 #[test]
 fn a_dry_run_and_a_real_run_differ_in_verb_and_in_effect() {
-    // Since Task S3a there is real materialization to do, so the honest
-    // distinction is no longer "neither run does anything": it is that both
-    // runs decide the same thing, only one of them acts, and the output says
-    // which happened.
+    // Both runs decide the same thing, only one of them acts, and the output
+    // says which happened.
     let env = TestEnv::with_real_source_and_target("link = [\"memory\"]");
     let before = env.snapshot();
 

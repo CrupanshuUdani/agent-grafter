@@ -11,12 +11,12 @@
 //!
 //! `--dry-run` and a real run compute the *same* plan from the same code;
 //! dry-run then calls [`Plan::describe`] and stops, while a real run calls
-//! [`execute`]. Constraint 3's "dry-run performs the full decision logic" is
-//! therefore structural rather than a discipline the next editor has to
-//! remember: there is no second, simplified decision path to drift away from.
+//! [`execute`]. Dry-run performs the full decision logic, so this property is
+//! structural rather than a discipline the next editor has to remember: there
+//! is no second, simplified decision path to drift away from.
 //!
-//! Every link creation and every link removal goes through `safelink`
-//! (Constraint 5). The filesystem work this module does itself is *reading* —
+//! Every link creation and every link removal goes through `safelink`.
+//! The filesystem work this module does itself is *reading* —
 //! enumerating a declared directory's files and comparing bytes to decide
 //! whether anything needs doing — plus two narrow deletions of this tool's own
 //! prior output: unlinking a copy whose source is gone ([`prune_one`]) and
@@ -144,9 +144,8 @@ pub struct PlannedRetention {
 ///
 /// Every such case in this module chooses the safe direction — do nothing —
 /// and every one of them then says so here. A pass that quietly did nothing is
-/// indistinguishable from one that had nothing to do, and Constraint 3's
-/// honesty requirement covers what a run *could not* decide just as much as
-/// what it decided.
+/// indistinguishable from one that had nothing to do; honesty requires reporting
+/// what a run *could not* decide just as much as what it decided.
 #[derive(Debug, Clone)]
 pub struct PlanNote {
     pub target: Option<String>,
@@ -314,8 +313,8 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) 
     target_names.sort();
 
     if target_names.is_empty() {
-        // Declared entries with nowhere to go. Reporting nothing would be the
-        // dishonest option (Constraint 3); this is a refusal with a reason.
+        // Declared entries with nowhere to go. Reporting nothing would be dishonest;
+        // this is a refusal with a reason.
         for label in manifest.link.iter().chain(manifest.copy.iter()) {
             entries.push(PlannedEntry {
                 target: None,
@@ -695,9 +694,8 @@ struct TargetContext<'a> {
     /// (prune candidates), the two places that would otherwise call
     /// `backup_path` and get back a path resolving through this link: each
     /// turns what would have been a write or a delete through it into a
-    /// visible refusal instead, rather than a write or delete with no
-    /// backup (Constraint 4 forbids that smaller unsafe version exactly as
-    /// much as the unsafe write or delete itself). Something that needs no
+    /// visible refusal instead, rather than a risky unbackedup write or delete.
+    /// Something that needs no
     /// backup either way is unaffected. Carried as the classified path
     /// rather than a pre-built message, since the two call sites word their
     /// refusal differently ("nothing was written" vs. "nothing was
@@ -714,10 +712,9 @@ fn plan_target(
     prunes: &mut Vec<PlannedPrune>,
     notes: &mut Vec<PlanNote>,
 ) {
-    // Ruling 8. `MaterializeOptions` defaults to creating missing parents, and
-    // its own doc comment warns that a typo in `dest` then silently builds a
-    // whole tree in the wrong place. The target *root* is the one level that
-    // must already exist; everything beneath it is this tool's to create.
+    // `MaterializeOptions` defaults to creating missing parents; a typo in `dest`
+    // could silently build a whole tree in the wrong place. The target *root* must
+    // already exist; everything beneath it is this tool's to create.
     if !ctx.dest.is_dir() {
         let reason = format!(
             "the target root {} does not exist (or is not a directory); \
@@ -792,8 +789,8 @@ fn plan_target(
 /// directory link (or overwrites it as a plain file), after which every
 /// backup this run files for that target resolves through whatever is now
 /// there instead of landing in `target.dest`. So the write side refuses out
-/// loud (`Decision::Refused`, not a silent no-op) — declared work that was
-/// declined must say so (Constraint 3) — and it checks the component at
+/// loud (`Decision::Refused`, not a silent no-op) — refusals must be reported
+/// explicitly — and it checks the component at
 /// *every* position, not just the intermediate ones the link/inspection
 /// checks below stop short of: unlike an ordinary path, a not-yet-existing
 /// *final* component named `.agrafter-backups` is exactly as dangerous as an
@@ -898,9 +895,8 @@ fn resolve_scoped_dest(
         current.push(name);
 
         // classify() before any metadata question, exactly as `prune_scope`
-        // does and for the same reason: `is_dir()` and `is_symlink()` can
-        // both be true at once, so `is_dir()` alone never answers "is it safe
-        // to write through here" (Spike S1).
+        // does: `is_dir()` and `is_symlink()` can both be true at once, so
+        // `is_dir()` alone never answers "is it safe to write through here".
         match classify(&current) {
             Ok(LinkClass::NotALink) => {}
             Ok(LinkClass::DirLink | LinkClass::FileLink) => {
@@ -944,9 +940,8 @@ fn resolve_scoped_dest(
 /// materialized copy to reconcile against anything, so there is nothing that
 /// could meaningfully be stale. An implementer who "helpfully" walked a link
 /// entry's destination looking for files "not declared anywhere" and removed
-/// them would be deleting *through the link, into the source of truth* — the
-/// exact failure Global Constraint 3 (inherited from `safelink`: never delete
-/// through a link) exists to prevent. Do not add pruning here.
+/// them would be deleting *through the link, into the source of truth* — a
+/// critical safety failure. Never delete through a link. Do not add pruning here.
 fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
     let source = ctx.source_root.join(name);
     if !source.exists() {
@@ -1095,8 +1090,8 @@ fn plan_copy_entry(
 ///      `ctx.dest`**, checking every level on the way down (see below).
 ///   2. It is called from exactly one place: [`plan_prunes`], which is called
 ///      from exactly one place: the directory branch of [`plan_copy_entry`].
-///      `link` entries and file `copy` entries therefore have no route here at
-///      all (Rulings A and B).
+///      This structural isolation means `link` entries and file `copy` entries
+///      cannot reach this function.
 ///   3. The walk below never receives `ctx.dest`. It is handed the scope root
 ///      and a relative prefix, so there is no expression anywhere in the prune
 ///      path that could name a sibling of the declared directory.
@@ -1115,12 +1110,11 @@ fn plan_copy_entry(
 /// So every level from `ctx.dest` down is classified in turn, and any of the
 /// following yields no scope, and therefore no prune candidates at all:
 ///
-///   - **A link at any level, intermediate or final.** Including the stale
-///     `DirLink` left at `dest/modes` by an earlier `link = ["modes"]`
-///     declaration that has since become `copy = ["modes"]` — Ruling A's
-///     failure mode arriving by a different door. Reported, not silent.
-///   - **Ruling C.** A component named as the backup directory. Backups live
-///     at `target.dest/.agrafter-backups`, not nested inside a declared
+///   - **A link at any level, intermediate or final.** Including a stale
+///     `DirLink` from a previous `link` declaration that changed to `copy`.
+///     Reported, not silent.
+///   - **A component named as the backup directory.** Backups live at
+///     `target.dest/.agrafter-backups`, not nested inside a declared
 ///     subdirectory, so a collision needs a manifest pathological enough to
 ///     declare that name itself — which nothing stops it from doing.
 ///     Hard-coded rather than argued to be impossible.
@@ -1160,8 +1154,8 @@ fn prune_scope(ctx: &TargetContext<'_>, declared_dir: &str) -> Scope {
         current.push(name);
 
         // classify() before any metadata question, at *every* level: `is_dir()`
-        // and `is_symlink()` can both be true at once, so `is_dir()` alone is
-        // not an answer to "is it safe to descend here" (Spike S1).
+        // and `is_symlink()` can both be true at once, so `is_dir()` alone
+        // does not answer "is it safe to descend here".
         match classify(&current) {
             Ok(LinkClass::NotALink) => {}
             Ok(LinkClass::DirLink | LinkClass::FileLink) => {
@@ -1213,7 +1207,7 @@ enum Scope {
 enum Found {
     /// A plain file. A prune candidate if the source no longer has it.
     File,
-    /// A link. Never descended into, never removed (Ruling D).
+    /// A link. Never descended into, never removed.
     Link,
 }
 
@@ -1385,8 +1379,8 @@ fn plan_prunes(
 /// what to delete, so it reports links separately instead of folding them in
 /// with files, and it never descends into one.
 ///
-/// Every object is put to `classify` before anything is decided about it
-/// (Ruling D). A bare `is_dir()` check to choose "recurse here" is wrong:
+/// Every object is classified before any decision is made about it.
+/// A bare `is_dir()` check to choose "recurse here" is wrong:
 /// `is_dir()` and `is_symlink()` can both be true simultaneously on a junction,
 /// so the metadata question is only ever asked *after* `classify` has said the
 /// object is not a link.
@@ -1413,8 +1407,8 @@ fn collect_dest_subtree(
     names.sort();
 
     for name in names {
-        // Ruling C, again and unconditionally: at every level, not just the
-        // top one, and regardless of whether it should be reachable here.
+        // Check for the backup directory name at every level unconditionally,
+        // regardless of whether it should be reachable here.
         if name.as_os_str() == BACKUP_DIR {
             continue;
         }
@@ -1497,7 +1491,7 @@ pub(crate) fn resolved_source(manifest: &Manifest, manifest_dir: &Path) -> PathB
 ///
 /// Recursion follows *real* directories only — a directory symlink inside the
 /// source is a traversal leaf, both because descending one could loop forever
-/// and because `safelink` treats every link as a boundary (Constraint 5).
+/// and because every link is treated as a boundary.
 ///
 /// Shared with [`crate::unlink`], which expands a declared `copy` directory
 /// the same way, so the two commands cannot disagree about which destination
@@ -1591,7 +1585,7 @@ fn decide(entry: &Entry, probe: &dyn SymlinkProbe) -> Decision {
 }
 
 /// The destination holds real data — a file or a directory this tool did not
-/// create. Constraint 4: overwriting it is opt-in, backed up, or refused.
+/// create. Overwriting must be opt-in, backed up, or explicitly refused.
 fn decide_over_real_data(entry: &Entry, probe: &dyn SymlinkProbe) -> Decision {
     if entry.dest.is_dir() {
         let occupied = std::fs::read_dir(&entry.dest)
@@ -1652,14 +1646,14 @@ fn is_genuinely_absent(e: &io::Error) -> bool {
     )
 }
 
-/// Whether the destination already satisfies the entry (Ruling 4).
+/// Whether the destination already satisfies the entry.
 ///
 /// **Known gap, deliberately left open:** this never checks where an existing
 /// link *points*. `safelink::classify` reports only the *kind* of object at a
 /// path, not its resolved target, so a link left over from before a manifest
 /// edit — pointing at a source that is no longer declared — is reported here
 /// as `same`. Closing that needs drift detection that can read a link's
-/// target, which belongs to `doctor` (Task S4) and does not exist yet. Do not
+/// target, which is future work. Do not
 /// silently "improve" this into a target comparison without that support.
 ///
 /// The `FileCopy`/`FileSymlink` arm compares bytes as well as kind, and it has
@@ -1742,7 +1736,7 @@ fn linked_backup_root(target_dest: &Path) -> Option<PathBuf> {
 }
 
 /// Where `dest`'s current content should be preserved before it is replaced,
-/// or `None` when there is nothing worth preserving (Ruling 7).
+/// or `None` when there is nothing worth preserving.
 ///
 /// Only a **real file** is ever backed up. A link is not: removing one
 /// destroys no data, since the thing it points at is untouched. A destination
@@ -1767,15 +1761,13 @@ fn backup_path(dest: &Path, target_dest: &Path, run_timestamp: &str) -> Option<P
 ///
 /// Acts only on what the plan already decided: nothing here re-derives
 /// whether an entry should be written. An entry the planner marked `Refused`
-/// is reported and skipped — a refusal stops that entry, never the run
-/// (Ruling 10).
+/// is reported and skipped — refusals are per-entry, never stopping the run.
 pub fn execute(plan: &Plan, probe: &dyn SymlinkProbe) -> Report {
     let mut lines = Vec::with_capacity(plan.entries.len() + plan.prunes.len());
     let mut refused = false;
     let mut failed = false;
 
-    // Ruling F: the retention sweep goes **first**, before any entry or prune
-    // executes.
+    // The retention sweep goes **first**, before any entry or prune executes.
     //
     // The order is the whole reason it is safe. Backup directories are created
     // lazily, by the first `copy_atomic` that needs one — nothing pre-creates
@@ -1810,9 +1802,8 @@ pub fn execute(plan: &Plan, probe: &dyn SymlinkProbe) -> Report {
             Decision::Same => lines.push(prefixed(planned, &format!("same: {}", planned.label))),
             Decision::Refused(reason) => {
                 refused = true;
-                // Reported, then skipped. One entry's refusal must never
-                // decide the fate of the others (Ruling 10); it only sets the
-                // run's exit code.
+                // Reported, then skipped. One entry's refusal does not affect others;
+                // it only sets the run's exit code.
                 lines.push(prefixed(
                     planned,
                     &format!("refused: {}: {reason}", planned.label),
@@ -1876,10 +1867,8 @@ pub fn execute(plan: &Plan, probe: &dyn SymlinkProbe) -> Report {
 /// The removal itself is `std::fs::remove_file` and nothing else. It is
 /// narrow by construction — it cannot remove a directory, and it cannot
 /// recurse — and it runs only after `classify` has said "not a link" and the
-/// metadata has said "a plain file". Removing a *link* is never this code's
-/// job; that stays exclusively `safelink::remove::remove_link`'s
-/// (Constraint 5), and this path never calls it, because it never removes a
-/// link at all.
+/// metadata has said "a plain file". Link removal stays exclusively with
+/// `safelink::remove::remove_link`; this path never removes a link at all.
 fn prune_one(prune: &PlannedPrune) -> io::Result<Option<String>> {
     if let PruneDecision::LeftInPlace(reason) = &prune.decision {
         return Ok(Some(reason.clone()));
@@ -1906,8 +1895,8 @@ fn prune_one(prune: &PlannedPrune) -> io::Result<Option<String>> {
         ));
     }
 
-    // Constraint 4: nothing is deleted without its content being preserved
-    // first. A `Remove` always carries a backup path — `backup_path` produced
+    // Nothing is deleted without its content being preserved first. A `Remove`
+    // always carries a backup path — `backup_path` produced
     // one for a plain file inside the target root — so its absence means the
     // plan and the disk disagree, and the safe reading of a disagreement is
     // "do not delete".

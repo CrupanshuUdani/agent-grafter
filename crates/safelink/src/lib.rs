@@ -2,7 +2,7 @@
 //! removing a link never deletes through it into the target.
 
 /// Loud marker so a green run on a non-Windows host is never mistaken for
-/// validation of the Windows link semantics. See Global Constraint 6.
+/// validation of the Windows link semantics.
 #[cfg(not(windows))]
 #[test]
 fn windows_link_semantics_are_not_validated_on_this_platform() {

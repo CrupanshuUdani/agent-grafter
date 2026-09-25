@@ -1,4 +1,4 @@
-//! Task 10b: the destination side. Task 10 covered a missing *source*; the
+//! The destination side. A missing *source* is one class of failure; the
 //! destination has two failure modes of its own, and they need opposite
 //! treatments.
 //!
@@ -29,8 +29,7 @@
 //! substantially heavier mechanism than a `chmod` and pulls in a dependency
 //! this crate does not otherwise need. The permission-denied path is
 //! therefore NOT exercised on Windows, and a green Windows CI run is not
-//! evidence that it works there. This matches Global Constraint 6 and the
-//! loud skip marker in `lib.rs`: the project states which platforms a claim
+//! evidence that it works there. We explicitly state which platforms a claim
 //! covers rather than letting a green check imply all of them.
 //!
 //! ROOT HONESTY: rows 5, 6 and 7 additionally self-skip when the process can
