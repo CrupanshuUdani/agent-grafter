@@ -19,7 +19,7 @@
 //! already prints the full plan, and clap's own `help` subcommand (see below)
 //! covers the rest of what a stub named `explain` would have offered.
 
-use std::io::ErrorKind;
+use std::io::{ErrorKind, IsTerminal};
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -82,6 +82,9 @@ enum Command {
     /// Remove previously materialized entries: links, and copies that still
     /// match their declared source. Refuses anything else.
     Unlink(UnlinkArgs),
+    /// Generate a starter manifest: prompts interactively, or `--print`s a
+    /// commented template to stdout without touching anything.
+    Init(InitArgs),
 }
 
 #[derive(clap::Args)]
@@ -114,6 +117,19 @@ struct UnlinkArgs {
     manifest: PathBuf,
 }
 
+#[derive(clap::Args)]
+struct InitArgs {
+    /// Overwrite an existing manifest instead of refusing.
+    #[arg(long)]
+    force: bool,
+    /// Print a commented template to stdout instead of prompting; writes
+    /// nothing, and works without a terminal.
+    #[arg(long)]
+    print: bool,
+    #[arg(long, default_value = DEFAULT_MANIFEST)]
+    manifest: PathBuf,
+}
+
 /// Parse arguments from the process environment and dispatch, returning
 /// the exit code the process should terminate with.
 pub fn run() -> ExitCode {
@@ -141,6 +157,7 @@ pub fn run() -> ExitCode {
         Command::Status(args) => status(&args),
         Command::Doctor(args) => doctor(&args),
         Command::Unlink(args) => unlink(&args),
+        Command::Init(args) => init(&args),
     }
 }
 
@@ -226,6 +243,55 @@ fn unlink(args: &UnlinkArgs) -> ExitCode {
         ExitCode::Refused
     } else {
         ExitCode::Success
+    }
+}
+
+/// Wire clap's args to the init flow, supply the terminal check and prompter,
+/// and map the outcome to an exit code.
+fn init(args: &InitArgs) -> ExitCode {
+    let is_tty = std::io::stdin().is_terminal();
+    let init_args = crate::init::InitArgs {
+        manifest_path: args.manifest.clone(),
+        force: args.force,
+        print: args.print,
+    };
+    let mut prompter = crate::init::CliclackPrompter;
+
+    match crate::init::run(&init_args, is_tty, &mut prompter) {
+        crate::init::InitOutcome::Printed(contents) => {
+            print!("{contents}");
+            ExitCode::Success
+        }
+        crate::init::InitOutcome::Wrote { path, .. } => {
+            println!("wrote {}", path.display());
+            ExitCode::Success
+        }
+        crate::init::InitOutcome::NonInteractive => {
+            eprintln!(
+                "init needs an interactive terminal; run \
+                 `agent-grafter init --print > {DEFAULT_MANIFEST}` instead"
+            );
+            ExitCode::InvalidUsage
+        }
+        crate::init::InitOutcome::AlreadyExists(path) => {
+            eprintln!(
+                "{} already exists; re-run with --force to overwrite it",
+                path.display()
+            );
+            ExitCode::Refused
+        }
+        crate::init::InitOutcome::InvalidGenerated(e) => {
+            eprintln!("generated manifest is invalid: {e}");
+            ExitCode::InvalidUsage
+        }
+        crate::init::InitOutcome::Cancelled => {
+            eprintln!("init cancelled; nothing written");
+            ExitCode::UnexpectedError
+        }
+        crate::init::InitOutcome::Io(e) => {
+            eprintln!("init failed: {e}");
+            ExitCode::UnexpectedError
+        }
     }
 }
 

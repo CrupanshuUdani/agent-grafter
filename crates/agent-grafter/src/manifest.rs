@@ -83,7 +83,12 @@ impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ManifestError::Io(path, e) => {
-                write!(f, "could not read manifest at {}: {e}", path.display())
+                write!(f, "could not read manifest at {}: {e}", path.display())?;
+                // NotFound is the one I/O error where a specific fix applies.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    write!(f, "; run `agent-grafter init` to create one")?;
+                }
+                Ok(())
             }
             ManifestError::Parse(e) => write!(f, "could not parse manifest: {e}"),
             ManifestError::Invalid(msg) => write!(f, "invalid manifest: {msg}"),
@@ -239,6 +244,30 @@ mod tests {
         assert!(
             message.contains(&path.display().to_string()),
             "error message must name the attempted path, got: {message}"
+        );
+    }
+
+    #[test]
+    fn missing_manifest_error_suggests_running_init() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.toml");
+
+        let err = read(&path).expect_err("missing manifest must error");
+        assert!(
+            err.to_string().contains("agent-grafter init"),
+            "a missing manifest's error must suggest `agent-grafter init`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_not_found_io_error_does_not_suggest_init() {
+        // The hint is for NotFound specifically, not other I/O errors.
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = read(dir.path()).expect_err("reading a directory as a manifest must error");
+        assert!(
+            !err.to_string().contains("agent-grafter init"),
+            "a non-NotFound I/O error must not suggest `agent-grafter init`, got: {err}"
         );
     }
 

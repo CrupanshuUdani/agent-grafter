@@ -17,6 +17,7 @@ toml = "0.8"
 # knowing: safelink must be published BEFORE agent-grafter, and this version
 # must be bumped in lockstep with safelink's own.
 safelink = { path = "../safelink", version = "0.1.0" }
+cliclack = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

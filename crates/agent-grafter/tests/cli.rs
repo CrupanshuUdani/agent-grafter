@@ -23,6 +23,13 @@ impl TestEnv {
         TestEnv { dir }
     }
 
+    /// A temp dir with no manifest at all — the state `init` expects to run
+    /// in, unlike every other command here.
+    fn empty() -> Self {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        TestEnv { dir }
+    }
+
     /// Overwrite this env's manifest. Used when the manifest content
     /// depends on a path only known after the env's temp dir exists (e.g.
     /// an absolute destination path).
@@ -71,6 +78,9 @@ impl TestEnv {
         let output = Command::new(env!("CARGO_BIN_EXE_agent-grafter"))
             .args(args)
             .current_dir(self.dir.path())
+            // Null stdin ensures init's non-interactive refusal is tested
+            // correctly, regardless of this test binary's own stdin.
+            .stdin(std::process::Stdio::null())
             .output()
             .expect("spawn agent-grafter");
         RunResult { output }
@@ -356,5 +366,98 @@ fn a_dry_run_reports_the_same_exit_code_a_real_run_would() {
         fs::read(occupied.join("hand-written.md")).unwrap(),
         b"mine",
         "neither run may touch the occupying directory"
+    );
+}
+
+// `init` integration tests: only testing paths that require a real process
+// (like non-terminal stdin detection). Unit tests with scripted prompts live
+// in src/init.rs.
+
+#[test]
+fn init_without_print_refuses_when_stdin_is_not_a_terminal() {
+    let env = TestEnv::empty();
+
+    let result = env.run(&["init"]);
+
+    result.assert_exit_code(2);
+    assert!(
+        result.stderr().contains("--print"),
+        "the refusal must name the non-interactive route, got: {}",
+        result.stderr()
+    );
+    assert!(
+        !env.path().join("agent-grafter.toml").exists(),
+        "a refused init must not write a manifest"
+    );
+}
+
+#[test]
+fn init_off_tty_with_an_existing_manifest_refuses_with_exit_4_not_2() {
+    // Existing manifest error takes priority over non-terminal error.
+    let env = TestEnv::with_manifest("sentinel content");
+
+    let result = env.run(&["init"]);
+
+    result.assert_exit_code(4);
+    let stderr = result.stderr();
+    assert!(
+        stderr.contains("agent-grafter.toml"),
+        "the refusal must name the existing manifest's path, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("--force"),
+        "the refusal must name --force as the way past it, got: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(env.path().join("agent-grafter.toml")).unwrap(),
+        "sentinel content",
+        "a refused init must never touch the existing manifest"
+    );
+}
+
+#[test]
+fn init_print_writes_nothing_and_emits_a_commented_template() {
+    let env = TestEnv::empty();
+
+    let result = env.run(&["init", "--print"]);
+
+    result.assert_success();
+    let out = result.stdout();
+    assert!(out.lines().any(|l| l.trim_start().starts_with('#')));
+    assert!(out.contains("source ="));
+    assert!(out.contains("copy ="));
+    assert!(out.contains("link ="));
+    assert!(out.contains("[targets."));
+    assert!(
+        !env.path().join("agent-grafter.toml").exists(),
+        "--print must never write a manifest"
+    );
+}
+
+#[test]
+fn init_print_output_is_a_manifest_the_tool_itself_accepts() {
+    let env = TestEnv::empty();
+
+    let template = env.run(&["init", "--print"]).assert_success().stdout();
+    env.write_manifest(&template);
+
+    // The template declares `link = ["memory/"]` against
+    // `[targets."example"]` (`dest = "~/.example"`), and `~/.example/memory`
+    // does not exist on this machine, so `status` reports drift rather than
+    // an unparseable-manifest error — exit 3, not 2, is the proof the
+    // template parsed.
+    env.run(&["status"]).assert_exit_code(3);
+}
+
+#[test]
+fn init_print_ignores_an_existing_manifest_and_never_overwrites_it() {
+    let env = TestEnv::with_manifest("sentinel content, not valid TOML for this tool");
+
+    env.run(&["init", "--print"]).assert_success();
+
+    assert_eq!(
+        fs::read_to_string(env.path().join("agent-grafter.toml")).unwrap(),
+        "sentinel content, not valid TOML for this tool",
+        "--print must never touch an existing manifest, valid or not"
     );
 }
