@@ -6,6 +6,7 @@
 pub mod apply;
 pub mod cli;
 pub mod doctor;
+pub mod init;
 pub mod manifest;
 pub mod retention;
 pub mod unlink;
