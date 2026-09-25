@@ -2,46 +2,10 @@
 //! prompt flow), or non-interactively via `--print` (a commented template to
 //! stdout, touching nothing).
 //!
-//! Implements Task S10; the open choices the brief left are resolved by
-//! Rulings R1-R10 in `progress.md`, referenced by number in the doc comments
-//! below. The short version:
-//!
-//!   - **R1**: no `--print` and stdin is not a terminal -> refuse (exit 2),
-//!     naming `init --print > agent-grafter.toml` as the scripted route.
-//!   - **R2**: `--print` is non-interactive, writes nothing, never prompts.
-//!   - **R3**: no filesystem probing -- prompt defaults are static text, not
-//!     detected facts.
-//!   - **R4**: the existing-manifest check runs before any prompt, and the
-//!     write itself uses `create_new(true)` (no check-then-write race).
-//!   - **R5**: the generated TOML is run through `manifest::parse` before it
-//!     is written *or* printed; a failure writes nothing.
-//!   - **R6**: the final "write this?" confirm defaults to Yes when creating
-//!     a new file, No when `--force` would overwrite one.
-//!   - **R7**: cancellation (Ctrl-C/Esc, or an explicit "no" to the final
-//!     confirm) writes nothing and is reported the same way.
-//!   - **R8**: the question set -- source, `copy`, `link`, then one or more
-//!     targets -- lives in [`run_prompts`].
-//!   - **R9**: `manifest::ManifestError`'s `NotFound` hint pointing back to
-//!     `init` lives in `manifest.rs`, not here.
-//!   - **R10**: `cliclack`'s actual transitive-crate delta and gate results
-//!     are recorded in this task's report, not in code.
-//!   - **R11** (fix round 1): the existing-manifest refusal (R4) runs
-//!     *before* the TTY check (R1), not after -- an existing manifest is a
-//!     real, actionable problem regardless of whether stdin is a terminal.
-//!   - **R12** (fix round 1): a `--force` overwrite is atomic -- write to a
-//!     temp file in the manifest's own directory, `sync_all`, then `rename`
-//!     over the target; the temp file is removed on any error. See
-//!     [`atomic_overwrite`].
-//!
-//! **Testability, mirroring `safelink::capability::SymlinkProbe` and
-//! `crate::winenv::WindowsFacts`:** neither a closed nor a piped stdin
-//! reaches `cliclack` at all -- both come back a hard I/O error, off a real
-//! terminal, before a single prompt renders (see progress.md's corrected
-//! "ground 4"). So every prompt is issued through the [`Prompter`] trait:
-//! [`CliclackPrompter`] is the real, untestable-by-construction terminal
-//! implementation, and [`ScriptedPrompter`] is what tests drive instead.
-//! Only the thin call from `cli.rs` into [`run`] with a real [`CliclackPrompter`]
-//! is untested -- a stated, acceptable gap, not an oversight.
+//! Every prompt is issued through the [`Prompter`] trait, so the logic can be
+//! tested without a real terminal. [`CliclackPrompter`] is the terminal
+//! implementation (tested by hand only), and [`ScriptedPrompter`] is what
+//! unit tests drive instead.
 
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Write as _};
@@ -57,20 +21,19 @@ pub struct InitArgs {
 }
 
 /// Every way `init` can end. `cli.rs` maps each variant to an [`super::cli::ExitCode`]
-/// and to the stdout/stderr text the user sees -- this module stays free of
-/// those process-facing concerns beyond the generated manifest text itself.
+/// and to the stdout/stderr text the user sees.
 pub enum InitOutcome {
-    /// `--print`: the commented template, not written anywhere (R2).
+    /// `--print`: the commented template, not written anywhere.
     Printed(String),
     /// The manifest was written.
     Wrote { path: PathBuf, contents: String },
-    /// R1: no `--print`, and stdin is not a terminal.
+    /// No `--print`, and stdin is not a terminal.
     NonInteractive,
-    /// R4: the manifest already exists and `--force` was not passed.
+    /// The manifest already exists and `--force` was not passed.
     AlreadyExists(PathBuf),
-    /// R5: the generated manifest failed `manifest::parse`.
+    /// The generated manifest failed `manifest::parse`.
     InvalidGenerated(manifest::ManifestError),
-    /// R7: the user cancelled (Ctrl-C/Esc), or declined the final confirm.
+    /// The user cancelled (Ctrl-C/Esc), or declined the final confirm.
     Cancelled,
     /// Any other I/O failure while prompting or writing.
     Io(io::Error),
@@ -151,9 +114,7 @@ pub struct ScriptedPrompter {
     /// Every `preview` call this prompter received, in order -- tests assert
     /// against this instead of capturing real stdout.
     pub shown: Vec<String>,
-    /// Every `outro` message this prompter received, in order -- this is
-    /// where the "close by telling the user what to run next" checklist
-    /// item lives, so it needs the same kind of test-visible record.
+    /// Every `outro` message this prompter received, in order.
     pub outros: Vec<String>,
 }
 
@@ -216,22 +177,11 @@ impl Prompter for ScriptedPrompter {
     }
 }
 
-/// R3: a static placeholder, never a detected path.
+/// A static placeholder, never a detected path.
 const PLACEHOLDER_SOURCE: &str = ".";
 
-/// Renders the manifest text: comments are the documentation (see
-/// `crates/agent-grafter/agrafter.toml`), so this is the one place that
-/// shape is written, shared by both `--print`'s fixed placeholders and a
-/// real interactive answer.
-/// Renders `value` as a TOML string literal, via the `toml` crate's own
-/// serialization rather than `format!("{value:?}")`. Rust's `Debug`
-/// escaping for `str` is close to TOML's basic-string grammar but not
-/// identical -- e.g. a control character becomes a braced, variable-width
-/// `\u{X...}` under Rust's rules, which is not valid TOML escape syntax at
-/// all (TOML wants a fixed-width, unbraced `\uXXXX`). Going through
-/// `toml::Value` guarantees whatever comes out is TOML `--` including its
-/// choice of a literal (single-quoted) string when that avoids escaping
-/// altogether, which is also correct TOML.
+/// Renders `value` as a TOML string literal via `toml::Value`, not Rust's
+/// `Debug`, because the escape rules differ: Rust's `\u{X...}` is invalid TOML.
 fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_string()).to_string()
 }
@@ -275,8 +225,7 @@ fn render_manifest(
     out
 }
 
-/// The fixed `--print` template: static placeholder values (R3), not
-/// anything discovered on disk.
+/// The fixed `--print` template: static placeholder values, not discovered on disk.
 fn placeholder_manifest() -> String {
     render_manifest(
         PLACEHOLDER_SOURCE,
@@ -308,9 +257,8 @@ struct PromptedManifest {
     targets: Vec<(String, String)>,
 }
 
-/// R8's question set: source directory, then `copy`/`link` (re-asked as a
-/// pair until at least one is non-empty), then one or more targets (a
-/// mandatory first one, then "add another?" defaulting to No).
+/// Collect answers: source directory, then `copy`/`link` (re-asked until at least
+/// one is non-empty), then one or more targets (one mandatory, then "add another?").
 fn run_prompts(prompter: &mut dyn Prompter) -> io::Result<PromptedManifest> {
     prompter.intro("agent-grafter init")?;
 
@@ -358,10 +306,8 @@ fn run_prompts(prompter: &mut dyn Prompter) -> io::Result<PromptedManifest> {
     })
 }
 
-/// Maps a `Prompter` I/O error to the outcome it means: `NotConnected` is
-/// `cliclack`'s own off-terminal error (belt and braces alongside the
-/// structural `is_tty` check in [`run`] -- R1), `Interrupted` is a real
-/// Ctrl-C/Esc cancellation (R7), anything else is a genuine failure.
+/// Maps `Prompter` I/O errors to outcomes: `Interrupted` means Ctrl-C/Esc,
+/// `NotConnected` means not a terminal, anything else is a genuine failure.
 fn map_prompt_error(e: io::Error) -> InitOutcome {
     match e.kind() {
         ErrorKind::Interrupted => InitOutcome::Cancelled,
@@ -370,20 +316,10 @@ fn map_prompt_error(e: io::Error) -> InitOutcome {
     }
 }
 
-/// R12: overwrite `path` atomically -- write `contents` to a temp file in
-/// `path`'s own directory (same filesystem, so the rename below can never
-/// fall back to a copy), `sync_all` it to disk, then `rename` it over
-/// `path`. The temp file is removed on any error along the way.
-///
-/// This replaces a plain `std::fs::write`, which opens the existing target
-/// with `O_TRUNC` and writes into it in place: if the process dies or the
-/// disk fills partway through, the original content is already gone with
-/// nothing to replace it. `rename` on the same filesystem is atomic --
-/// `path` either still names the old content or already names the new
-/// content in full, never a partial mix of both, and never a missing file.
-/// No separate `.bak` is kept: the user already confirmed this overwrite
-/// (R6, defaulted to No), and atomic replace alone already guarantees the
-/// original survives any failure during the write itself.
+/// Overwrite `path` atomically: write to a temp file, sync to disk, then
+/// rename over the target. If anything fails, remove the temp file. This
+/// ensures `path` either keeps its old content or gets the new content in
+/// full—never a partial or missing file from an in-place truncate.
 fn atomic_overwrite(path: &Path, contents: &str) -> io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -393,10 +329,6 @@ fn atomic_overwrite(path: &Path, contents: &str) -> io::Result<()> {
         .file_name()
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "manifest path has no file name"))?
         .to_string_lossy();
-    // pid + nanosecond timestamp: not cryptographically unique, but this
-    // tool never runs two concurrent `init --force` invocations against the
-    // same manifest as part of its own design, and a collision only ever
-    // means overwriting scratch space this same call already owns.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -417,13 +349,10 @@ fn atomic_overwrite(path: &Path, contents: &str) -> io::Result<()> {
     result
 }
 
-/// The whole decision path, independent of `clap` and of the real terminal:
-/// `is_tty` and `prompter` are both supplied by the caller so tests can
-/// drive this directly (`is_tty: true` plus a [`ScriptedPrompter`]) without
-/// touching a real terminal at all.
+/// Execute the init flow. Both `is_tty` and `prompter` are supplied by the
+/// caller so tests can drive this directly with a [`ScriptedPrompter`].
 pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOutcome {
     if args.print {
-        // R2: never prompts, never touches the manifest path.
         let contents = placeholder_manifest();
         return match manifest::parse(&contents) {
             Ok(_) => InitOutcome::Printed(contents),
@@ -431,19 +360,13 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
         };
     }
 
+    // Check for an existing manifest before checking TTY: a real file is a
+    // more actionable problem than "needs a terminal".
     if !args.force && args.manifest_path.exists() {
-        // R11: this refusal runs BEFORE the TTY check below. An existing
-        // manifest is a real, actionable problem ("this file exists, use
-        // --force") regardless of whether stdin happens to be a terminal --
-        // reporting "needs an interactive terminal" instead would tell an
-        // off-TTY user the wrong thing about their actual situation. Also
-        // R4: before any prompt, so a user is never walked through the
-        // whole question set only to be refused at the very end.
         return InitOutcome::AlreadyExists(args.manifest_path.clone());
     }
 
     if !is_tty {
-        // R1, checked structurally before any prompt is constructed.
         return InitOutcome::NonInteractive;
     }
 
@@ -459,7 +382,6 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
         &prompted.targets,
     );
     if let Err(e) = manifest::parse(&contents) {
-        // R5: nothing is written when the generated manifest is invalid.
         return InitOutcome::InvalidGenerated(e);
     }
 
@@ -467,28 +389,19 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
         return map_prompt_error(e);
     }
 
-    // R6: default Yes creating a new file, default No when this run would
-    // actually overwrite one -- Global Constraint 4, never inherit a
-    // destructive default. Keyed on whether the target exists right now,
-    // not merely on whether `--force` was passed: `--force` against a path
-    // with nothing there changes nothing about what this run does, so
-    // there is nothing to be cautious about defaulting to.
+    // Default Yes if creating new, No if overwriting (keyed on actual file
+    // existence, not just --force flag).
     let default_confirm = !args.manifest_path.exists();
     let confirmed = match prompter.confirm("Write this manifest?", default_confirm) {
         Ok(b) => b,
         Err(e) => return map_prompt_error(e),
     };
     if !confirmed {
-        // R7: an explicit decline is nothing-written, same as a Ctrl-C
-        // cancellation.
         return InitOutcome::Cancelled;
     }
 
-    // R4: `create_new(true)` closes the check-then-write race the earlier
-    // `.exists()` check above cannot, on its own, rule out. `--force` skips
-    // that race protection deliberately -- overwriting is exactly what it
-    // asked for, but R12 requires the overwrite itself to be atomic (see
-    // `atomic_overwrite`), never an in-place truncate.
+    // create_new(true) is a race-safe way to create without overwriting for
+    // the non-force path. For --force, atomic_overwrite is used instead.
     let write_result = if args.force {
         atomic_overwrite(&args.manifest_path, &contents)
     } else {
@@ -501,13 +414,8 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
 
     match write_result {
         Ok(()) => {
-            // Closes the visual session `intro` opened, and is where the
-            // checklist's "close by telling the user what to run next"
-            // lives -- behind the trait, like everything else here, so it
-            // is asserted in a test rather than only ever eyeballed. Its
-            // own failure does not change the outcome: the manifest is
-            // already written by this point, and a chrome-closing hiccup
-            // must not report a write that happened as an error.
+            // outro closes the session and tells the user what to run next.
+            // Its failure doesn't change the outcome: the manifest is already written.
             let _ = prompter
                 .outro("Run `agent-grafter apply --dry-run` next to preview what it would do.");
             InitOutcome::Wrote {
@@ -534,11 +442,8 @@ mod tests {
         }
     }
 
-    /// Wraps a [`ScriptedPrompter`], recording the `initial` argument each
-    /// `confirm` call actually received. `Confirm(_)` in the script is what
-    /// the *answer* is; this is for pinning what `run` *asked*, independent
-    /// of the answer -- so a regression in a default value is caught even
-    /// though the scripted answer would otherwise mask it.
+    /// Records what `confirm` asks (the `initial` argument) vs. what the script
+    /// answers, so regressions in default values are caught independently.
     struct RecordingPrompter {
         inner: ScriptedPrompter,
         confirm_initials: Vec<bool>,
@@ -591,8 +496,6 @@ mod tests {
     fn print_never_prompts_and_never_touches_the_filesystem() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent-grafter.toml");
-        // An empty script: if `run` prompted even once here, `next_text`
-        // or `next_confirm` would panic on an empty queue.
         let mut prompter = ScriptedPrompter::new(vec![]);
 
         let outcome = run(&args(path.clone(), false, true), false, &mut prompter);
@@ -609,14 +512,6 @@ mod tests {
 
     #[test]
     fn render_manifest_round_trips_values_containing_quotes_and_backslashes() {
-        // Rust's `{:?}` escaping for strings is not guaranteed to match
-        // TOML's own string-escape grammar for every input: Rust's
-        // `char::escape_debug` renders a control character as a braced,
-        // variable-length `\u{X...}` (e.g. `\u{b}` for vertical tab), which
-        // is not valid TOML escape syntax at all (TOML wants a fixed-width
-        // `\uXXXX`, unbraced) -- so a `{:?}`-rendered value containing one
-        // produces TOML that fails to parse. Rendering must go through the
-        // `toml` crate's own serialization instead.
         let source = ".";
         let copy = vec!["odd\"name.md".to_string()];
         let link: Vec<String> = vec![];
@@ -679,8 +574,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent-grafter.toml");
         std::fs::write(&path, "sentinel").unwrap();
-        // Empty script: reaching a single prompt call here would panic,
-        // proving R4 -- the refusal happens before any question is asked.
         let mut prompter = ScriptedPrompter::new(vec![]);
 
         let outcome = run(&args(path.clone(), false, false), true, &mut prompter);
@@ -691,11 +584,7 @@ mod tests {
 
     #[test]
     fn existing_manifest_without_force_is_refused_even_off_tty() {
-        // R11: the existing-manifest refusal (exit 4) must win over the
-        // non-interactive refusal (exit 2) -- a user with a real problem
-        // (a manifest already there) must be told that, not "needs a
-        // terminal", even when both conditions are true at once. Empty
-        // script: reaching a prompt here would panic either way.
+        // Existing manifest error takes priority over non-terminal error.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent-grafter.toml");
         std::fs::write(&path, "sentinel").unwrap();
@@ -745,8 +634,6 @@ mod tests {
 
     #[test]
     fn force_overwrite_succeeds_and_leaves_no_temp_file_behind() {
-        // R12: the required minimum -- a successful --force overwrite
-        // updates the content and leaves nothing else in the directory.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent-grafter.toml");
         std::fs::write(&path, "old content").unwrap();
@@ -773,11 +660,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn force_overwrite_replaces_the_manifest_via_atomic_rename_not_in_place_truncate() {
-        // R12: "atomic" means write-to-temp + rename, not truncate-then-write
-        // the target directly. A rename swaps the directory entry to a new
-        // inode; an in-place truncate (the old `std::fs::write` behavior)
-        // keeps the same inode. This is the one property that distinguishes
-        // the two implementations from the outside.
+        // Atomic overwrite uses rename (new inode), not truncate (same inode).
         use std::os::unix::fs::MetadataExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -800,11 +683,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_force_overwrite_failure_leaves_the_original_manifest_untouched() {
-        // R12: if the write fails partway (simulated here by making the
-        // directory unwritable, so the temp file cannot even be created),
-        // the original manifest must be exactly as it was -- never
-        // truncated, never partially overwritten, and no temp file left
-        // behind either.
+        // Simulated write failure: directory made unwritable. Original must
+        // be untouched and no temp file left behind.
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -815,8 +695,6 @@ mod tests {
         let creatable = dir.path().join("probe-write-access");
         let dir_is_actually_locked = std::fs::write(&creatable, b"x").is_err();
         if !dir_is_actually_locked {
-            // Running with privileges that ignore mode bits (root in a
-            // container). The case cannot be produced here.
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
             return;
         }
@@ -921,8 +799,6 @@ mod tests {
             Answer::Text("example"),
             Answer::Text("~/.example"),
             Answer::Confirm(false),
-            // No final confirm answer: `run` must return before reaching
-            // it, or `next_confirm` panics on an empty queue.
         ]);
 
         let outcome = run(&args(path.clone(), false, false), true, &mut prompter);
@@ -972,10 +848,8 @@ mod tests {
 
     #[test]
     fn a_not_connected_prompt_error_mid_flow_reports_non_interactive() {
-        // Belt-and-braces (R1): even though `is_tty: true` was asserted by
-        // the caller, a `cliclack` prompt can still fail this way (e.g. a
-        // race between the check and the prompt). It must map to the same
-        // outcome as the structural check, not to a generic failure.
+        // Even with is_tty: true, a prompt can fail with NotConnected
+        // (e.g. a race). Must map to NonInteractive, not a generic error.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent-grafter.toml");
         let mut prompter = ScriptedPrompter::new(vec![Answer::TextErr(ErrorKind::NotConnected)]);

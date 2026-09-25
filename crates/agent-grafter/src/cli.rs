@@ -246,15 +246,8 @@ fn unlink(args: &UnlinkArgs) -> ExitCode {
     }
 }
 
-/// `init`: see `crate::init` for the full decision path (Rulings R1-R10 in
-/// Task S10's progress.md). This wires clap's args to it, supplies the real
-/// (`cliclack`-backed) prompter and the actual `is_terminal()` check, and
-/// maps the outcome to an exit code plus the text the user sees.
-///
-/// `is_terminal()` is checked here, once, and passed in — never re-checked
-/// inside `crate::init::run` — so a test can drive that function with
-/// `is_tty: true` and a scripted prompter without a real terminal at all
-/// (R1's structural check and its unit tests both live there).
+/// Wire clap's args to the init flow, supply the terminal check and prompter,
+/// and map the outcome to an exit code.
 fn init(args: &InitArgs) -> ExitCode {
     let is_tty = std::io::stdin().is_terminal();
     let init_args = crate::init::InitArgs {
@@ -270,9 +263,6 @@ fn init(args: &InitArgs) -> ExitCode {
             ExitCode::Success
         }
         crate::init::InitOutcome::Wrote { path, .. } => {
-            // The "what to run next" hint is delivered by `crate::init::run`
-            // itself, via the prompter's `outro` -- see that function's doc
-            // comment. This is only the plain, scriptable confirmation.
             println!("wrote {}", path.display());
             ExitCode::Success
         }

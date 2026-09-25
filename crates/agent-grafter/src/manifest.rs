@@ -84,11 +84,7 @@ impl std::fmt::Display for ManifestError {
         match self {
             ManifestError::Io(path, e) => {
                 write!(f, "could not read manifest at {}: {e}", path.display())?;
-                // R9 (Task S10's progress.md): a missing manifest is the one
-                // I/O failure whose fix is "run a specific command", so name
-                // it. Any other kind (permission denied, a directory where a
-                // file was expected, ...) has no such single fix, so it is
-                // left exactly as it read before this task.
+                // NotFound is the one I/O error where a specific fix applies.
                 if e.kind() == std::io::ErrorKind::NotFound {
                     write!(f, "; run `agent-grafter init` to create one")?;
                 }
@@ -253,8 +249,6 @@ mod tests {
 
     #[test]
     fn missing_manifest_error_suggests_running_init() {
-        // R9 (Task S10's progress.md): a NotFound manifest is exactly the
-        // failure `init` exists to fix, so the error should say so.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.toml");
 
@@ -267,8 +261,7 @@ mod tests {
 
     #[test]
     fn a_non_not_found_io_error_does_not_suggest_init() {
-        // R9: the hint is for NotFound specifically -- a directory where a
-        // file was expected is a different failure with no such fix.
+        // The hint is for NotFound specifically, not other I/O errors.
         let dir = tempfile::tempdir().unwrap();
 
         let err = read(dir.path()).expect_err("reading a directory as a manifest must error");

@@ -78,9 +78,8 @@ impl TestEnv {
         let output = Command::new(env!("CARGO_BIN_EXE_agent-grafter"))
             .args(args)
             .current_dir(self.dir.path())
-            // Explicit, not incidental: `init`'s non-interactive refusal (R1)
-            // depends on stdin genuinely not being a terminal, regardless of
-            // whether this test binary itself happens to be run from one.
+            // Null stdin ensures init's non-interactive refusal is tested
+            // correctly, regardless of this test binary's own stdin.
             .stdin(std::process::Stdio::null())
             .output()
             .expect("spawn agent-grafter");
@@ -370,17 +369,12 @@ fn a_dry_run_reports_the_same_exit_code_a_real_run_would() {
     );
 }
 
-// `init` — everything reachable through the real binary rather than the
-// injected `Prompter` (see `src/init.rs`'s unit tests for R4-R8, which need
-// a scripted prompter and so cannot go through a spawned process at all).
-// R1's non-interactive refusal is exactly the one behavior that *needs* a
-// real process: it depends on stdin genuinely not being a terminal, which
-// `TestEnv::run`'s `Stdio::null()` guarantees.
+// `init` integration tests: only testing paths that require a real process
+// (like non-terminal stdin detection). Unit tests with scripted prompts live
+// in src/init.rs.
 
 #[test]
 fn init_without_print_refuses_when_stdin_is_not_a_terminal() {
-    // R1: no --print and a non-terminal stdin refuses (exit 2) rather than
-    // blocking on input that will never come.
     let env = TestEnv::empty();
 
     let result = env.run(&["init"]);
@@ -399,10 +393,7 @@ fn init_without_print_refuses_when_stdin_is_not_a_terminal() {
 
 #[test]
 fn init_off_tty_with_an_existing_manifest_refuses_with_exit_4_not_2() {
-    // R11: the existing-manifest refusal must win over the non-interactive
-    // refusal when both apply at once. A user who already has a manifest
-    // and happens to be running off a terminal has a real problem ("this
-    // file exists, use --force"), not the generic "needs a terminal" one.
+    // Existing manifest error takes priority over non-terminal error.
     let env = TestEnv::with_manifest("sentinel content");
 
     let result = env.run(&["init"]);
@@ -426,8 +417,6 @@ fn init_off_tty_with_an_existing_manifest_refuses_with_exit_4_not_2() {
 
 #[test]
 fn init_print_writes_nothing_and_emits_a_commented_template() {
-    // R2/R3: --print is non-interactive, touches no file, and the template
-    // carries explanatory comments rather than bare keys.
     let env = TestEnv::empty();
 
     let result = env.run(&["init", "--print"]);
@@ -447,8 +436,6 @@ fn init_print_writes_nothing_and_emits_a_commented_template() {
 
 #[test]
 fn init_print_output_is_a_manifest_the_tool_itself_accepts() {
-    // R5: what --print emits must parse cleanly -- redirecting it straight
-    // into place and running a read-only command against it must succeed.
     let env = TestEnv::empty();
 
     let template = env.run(&["init", "--print"]).assert_success().stdout();
@@ -464,8 +451,6 @@ fn init_print_output_is_a_manifest_the_tool_itself_accepts() {
 
 #[test]
 fn init_print_ignores_an_existing_manifest_and_never_overwrites_it() {
-    // R2: --print is fully independent of the overwrite refusal in R4 --
-    // it neither checks for nor touches an existing manifest.
     let env = TestEnv::with_manifest("sentinel content, not valid TOML for this tool");
 
     env.run(&["init", "--print"]).assert_success();
