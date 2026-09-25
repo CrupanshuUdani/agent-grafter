@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 840">
+  <style>text { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }</style>
+  <rect width="100%" height="100%" fill="#020617"/>
+        <defs>
+          <marker id="ah-slate" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/></marker>
+          <marker id="ah-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/></marker>
+          <marker id="ah-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/></marker>
+          <marker id="ah-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/></marker>
+          <marker id="ah-violet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa"/></marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <line x1="232" y1="140" x2="296" y2="140" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah-cyan)"/>
+        <text x="264" y="132" fill="#94a3b8" font-size="8" text-anchor="middle">invokes</text>
+        <line x1="432" y1="140" x2="446" y2="140" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah-emerald)"/>
+        <line x1="365" y1="172" x2="365" y2="196" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah-emerald)"/>
+        <text x="373" y="188" fill="#94a3b8" font-size="8">dispatch</text>
+        <line x1="530" y1="172" x2="530" y2="196" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah-emerald)"/>
+        <text x="538" y="188" fill="#94a3b8" font-size="8">entries</text>
+        <path d="M 610 225 L 632 225 L 632 140 L 651 140" fill="none" stroke="#fb7185" stroke-width="1.5" marker-end="url(#ah-rose)"/>
+        <path d="M 610 360 L 632 360 L 632 320 L 651 320" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#ah-rose)"/>
+        <text x="628" y="312" fill="#fb7185" font-size="8" text-anchor="end">read-only</text>
+        <line x1="540" y1="392" x2="540" y2="416" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah-emerald)"/>
+        <text x="547" y="407" fill="#94a3b8" font-size="8">asks</text>
+        <line x1="370" y1="292" x2="370" y2="326" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah-emerald)"/>
+        <text x="378" y="312" fill="#94a3b8" font-size="8">sweep</text>
+        <line x1="827" y1="138" x2="874" y2="126" stroke="#fb7185" stroke-width="1.5" marker-end="url(#ah-rose)"/>
+        <text x="850" y="118" fill="#fb7185" font-size="8" text-anchor="middle">link &#183; copy</text>
+        <path d="M 132 284 L 132 640 L 866 640 L 866 215 L 876 215" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ah-slate)"/>
+        <text x="480" y="633" fill="#94a3b8" font-size="8" text-anchor="middle">copy[] &#8594; duplicated files &#183; link[] &#8594; one shared live copy</text>
+        <path d="M 370 392 L 370 480 L 455 480 L 455 615 L 850 615 L 850 425 L 876 425" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ah-violet)"/>
+        <text x="463" y="610" fill="#a78bfa" font-size="8">prunes old backups</text>
+
+        <rect x="250" y="40" width="610" height="560" rx="12" fill="rgba(251, 191, 36, 0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="262" y="58" fill="#fbbf24" font-size="10" font-weight="600">cargo workspace &#183; agent-grafter</text>
+        <rect x="270" y="70" width="350" height="510" rx="8" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="280" y="86" fill="#34d399" font-size="8" font-weight="600">crate: agent-grafter &#8212; CLI binary + lib</text>
+        <text x="280" y="98" fill="#64748b" font-size="7">main.rs = thin binary over lib</text>
+        <rect x="640" y="70" width="200" height="510" rx="8" fill="transparent" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="650" y="86" fill="#fb7185" font-size="8" font-weight="600">crate: safelink</text>
+        <text x="650" y="98" fill="#64748b" font-size="7">explicit, non-guessing links</text>
+
+        <rect x="30" y="90" width="200" height="190" rx="6" fill="#0f172a"/>
+        <rect x="30" y="90" width="200" height="190" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="130" y="112" fill="white" font-size="12" font-weight="600" text-anchor="middle">dotfiles repo</text>
+        <text x="130" y="130" fill="#94a3b8" font-size="9" text-anchor="middle">source of truth</text>
+        <text x="130" y="152" fill="#94a3b8" font-size="8" text-anchor="middle">&#8226; agent-grafter.toml (manifest)</text>
+        <text x="130" y="166" fill="#94a3b8" font-size="8" text-anchor="middle">&#8226; AGENTS.md &#183; modes/ &#183; skills/</text>
+        <text x="130" y="180" fill="#94a3b8" font-size="8" text-anchor="middle">&#160;&#160;(copy: authored config)</text>
+        <text x="130" y="194" fill="#94a3b8" font-size="8" text-anchor="middle">&#8226; memory/ (link: live state)</text>
+        <text x="130" y="218" fill="#64748b" font-size="7" text-anchor="middle">any git repo / vault</text>
+
+        <rect x="300" y="110" width="130" height="60" rx="6" fill="#0f172a"/>
+        <rect x="300" y="110" width="130" height="60" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="365" y="132" fill="white" font-size="11" font-weight="600" text-anchor="middle">cli.rs</text>
+        <text x="365" y="147" fill="#94a3b8" font-size="7" text-anchor="middle">apply &#183; status &#183; doctor</text>
+        <text x="365" y="160" fill="#94a3b8" font-size="7" text-anchor="middle">unlink &#183; init &#183; help</text>
+
+        <rect x="450" y="110" width="160" height="60" rx="6" fill="#0f172a"/>
+        <rect x="450" y="110" width="160" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="530" y="132" fill="white" font-size="11" font-weight="600" text-anchor="middle">manifest.rs</text>
+        <text x="530" y="147" fill="#94a3b8" font-size="9" text-anchor="middle">source &#183; copy &#183; link</text>
+        <text x="530" y="160" fill="#94a3b8" font-size="8" text-anchor="middle">[targets.*] &#183; TOML</text>
+
+        <rect x="300" y="200" width="310" height="90" rx="6" fill="#0f172a"/>
+        <rect x="300" y="200" width="310" height="90" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="455" y="222" fill="white" font-size="12" font-weight="600" text-anchor="middle">apply.rs</text>
+        <text x="455" y="240" fill="#94a3b8" font-size="9" text-anchor="middle">plan() &#8212; decide from manifest + fs state</text>
+        <text x="455" y="254" fill="#94a3b8" font-size="9" text-anchor="middle">execute() &#8212; write &#183; prune &#183; backup</text>
+        <text x="455" y="274" fill="#34d399" font-size="8" text-anchor="middle">--dry-run</text>
+
+        <rect x="300" y="330" width="140" height="60" rx="6" fill="#0f172a"/>
+        <rect x="300" y="330" width="140" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="370" y="352" fill="white" font-size="11" font-weight="600" text-anchor="middle">retention.rs</text>
+        <text x="370" y="367" fill="#94a3b8" font-size="9" text-anchor="middle">keep last N</text>
+        <text x="370" y="380" fill="#94a3b8" font-size="8" text-anchor="middle">backup dirs</text>
+
+        <rect x="470" y="330" width="140" height="60" rx="6" fill="#0f172a"/>
+        <rect x="470" y="330" width="140" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="540" y="352" fill="white" font-size="11" font-weight="600" text-anchor="middle">doctor.rs</text>
+        <text x="540" y="367" fill="#94a3b8" font-size="9" text-anchor="middle">read-only</text>
+        <text x="540" y="380" fill="#94a3b8" font-size="8" text-anchor="middle">diagnostics</text>
+
+        <rect x="470" y="420" width="140" height="60" rx="6" fill="#0f172a"/>
+        <rect x="470" y="420" width="140" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="540" y="442" fill="white" font-size="11" font-weight="600" text-anchor="middle">winenv.rs</text>
+        <text x="540" y="457" fill="#94a3b8" font-size="8" text-anchor="middle">elevated? Dev Mode?</text>
+        <text x="540" y="470" fill="#94a3b8" font-size="8" text-anchor="middle">Windows-only facts</text>
+
+        <rect x="300" y="500" width="140" height="60" rx="6" fill="#0f172a"/>
+        <rect x="300" y="500" width="140" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="370" y="522" fill="white" font-size="11" font-weight="600" text-anchor="middle">unlink.rs</text>
+        <text x="370" y="537" fill="#94a3b8" font-size="9" text-anchor="middle">remove links/copies</text>
+        <text x="370" y="550" fill="#94a3b8" font-size="8" text-anchor="middle">byte-check before rm</text>
+
+        <rect x="470" y="500" width="140" height="60" rx="6" fill="#0f172a"/>
+        <rect x="470" y="500" width="140" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="540" y="522" fill="white" font-size="11" font-weight="600" text-anchor="middle">init.rs</text>
+        <text x="540" y="537" fill="#94a3b8" font-size="9" text-anchor="middle">prompts or --print</text>
+        <text x="540" y="550" fill="#94a3b8" font-size="8" text-anchor="middle">writes manifest</text>
+
+        <rect x="655" y="110" width="170" height="60" rx="6" fill="#0f172a"/>
+        <rect x="655" y="110" width="170" height="60" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="740" y="132" fill="white" font-size="11" font-weight="600" text-anchor="middle">materialize</text>
+        <text x="740" y="147" fill="#94a3b8" font-size="8" text-anchor="middle">link, or copy fallback</text>
+        <text x="740" y="160" fill="#94a3b8" font-size="7" text-anchor="middle">when probe = false</text>
+
+        <rect x="655" y="200" width="170" height="60" rx="6" fill="#0f172a"/>
+        <rect x="655" y="200" width="170" height="60" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="740" y="222" fill="white" font-size="11" font-weight="600" text-anchor="middle">capability</text>
+        <text x="740" y="237" fill="#94a3b8" font-size="8" text-anchor="middle">SymlinkProbe trait</text>
+        <text x="740" y="250" fill="#94a3b8" font-size="7" text-anchor="middle">RealProbe / ForcedProbe</text>
+
+        <rect x="655" y="290" width="170" height="60" rx="6" fill="#0f172a"/>
+        <rect x="655" y="290" width="170" height="60" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="740" y="312" fill="white" font-size="11" font-weight="600" text-anchor="middle">classify</text>
+        <text x="740" y="327" fill="#94a3b8" font-size="8" text-anchor="middle">what sits at dest?</text>
+        <text x="740" y="340" fill="#94a3b8" font-size="7" text-anchor="middle">link &#183; dir &#183; file &#183; gone</text>
+
+        <rect x="655" y="380" width="80" height="70" rx="6" fill="#0f172a"/>
+        <rect x="655" y="380" width="80" height="70" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="695" y="405" fill="white" font-size="10" font-weight="600" text-anchor="middle">create</text>
+        <text x="695" y="421" fill="#94a3b8" font-size="7" text-anchor="middle">junction |</text>
+        <text x="695" y="432" fill="#94a3b8" font-size="7" text-anchor="middle">symlink</text>
+
+        <rect x="745" y="380" width="80" height="70" rx="6" fill="#0f172a"/>
+        <rect x="745" y="380" width="80" height="70" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="785" y="405" fill="white" font-size="10" font-weight="600" text-anchor="middle">remove</text>
+        <text x="785" y="421" fill="#94a3b8" font-size="7" text-anchor="middle">never deletes</text>
+        <text x="785" y="432" fill="#94a3b8" font-size="7" text-anchor="middle">through link</text>
+
+        <rect x="655" y="470" width="80" height="60" rx="6" fill="#0f172a"/>
+        <rect x="655" y="470" width="80" height="60" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="695" y="492" fill="white" font-size="10" font-weight="600" text-anchor="middle">copy</text>
+        <text x="695" y="508" fill="#94a3b8" font-size="7" text-anchor="middle">plain files</text>
+
+        <rect x="745" y="470" width="80" height="60" rx="6" fill="#0f172a"/>
+        <rect x="745" y="470" width="80" height="60" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="785" y="492" fill="white" font-size="9" font-weight="600" text-anchor="middle">paths &#183; op</text>
+        <text x="785" y="508" fill="#94a3b8" font-size="7" text-anchor="middle">path shapes</text>
+
+        <rect x="880" y="90" width="200" height="70" rx="6" fill="#0f172a"/>
+        <rect x="880" y="90" width="200" height="70" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="980" y="112" fill="white" font-size="11" font-weight="600" text-anchor="middle">target: agent-a</text>
+        <text x="980" y="128" fill="#94a3b8" font-size="9" text-anchor="middle">~/.agent-a</text>
+        <text x="980" y="144" fill="#94a3b8" font-size="8" text-anchor="middle">any agent harness</text>
+
+        <rect x="880" y="180" width="200" height="70" rx="6" fill="#0f172a"/>
+        <rect x="880" y="180" width="200" height="70" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="980" y="202" fill="white" font-size="11" font-weight="600" text-anchor="middle">target: agent-b</text>
+        <text x="980" y="218" fill="#94a3b8" font-size="9" text-anchor="middle">~/.agent-b</text>
+        <text x="980" y="234" fill="#94a3b8" font-size="8" text-anchor="middle">declared in [targets.*]</text>
+
+        <text x="980" y="290" fill="#64748b" font-size="7" text-anchor="middle">copy &#8594; duplicated files</text>
+        <text x="980" y="303" fill="#64748b" font-size="7" text-anchor="middle">link &#8594; one live copy</text>
+
+        <rect x="880" y="390" width="200" height="70" rx="6" fill="#0f172a"/>
+        <rect x="880" y="390" width="200" height="70" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="980" y="412" fill="white" font-size="11" font-weight="600" text-anchor="middle">.agrafter-backups/</text>
+        <text x="980" y="428" fill="#94a3b8" font-size="9" text-anchor="middle">clobbered-file backups</text>
+        <text x="980" y="444" fill="#a78bfa" font-size="8" text-anchor="middle">pruned to last N</text>
+
+        <text x="30" y="690" fill="white" font-size="10" font-weight="600">Legend</text>
+        <rect x="30" y="700" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="52" y="709" fill="#94a3b8" font-size="8">CLI entry</text>
+        <rect x="30" y="716" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="52" y="725" fill="#94a3b8" font-size="8">core logic (agent-grafter)</text>
+        <rect x="30" y="732" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="52" y="741" fill="#94a3b8" font-size="8">safelink &#8212; link safety</text>
+        <rect x="30" y="748" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="52" y="757" fill="#94a3b8" font-size="8">backup store</text>
+        <rect x="30" y="764" width="16" height="10" rx="2" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+        <text x="52" y="773" fill="#94a3b8" font-size="8">external &#8212; user files &amp; targets</text>
+        <line x1="30" y1="790" x2="46" y2="790" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="3,3"/>
+        <text x="52" y="793" fill="#94a3b8" font-size="8">read-only flow</text>
+        <rect x="30" y="802" width="16" height="10" rx="2" fill="transparent" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="52" y="811" fill="#94a3b8" font-size="8">workspace / crate boundary</text>
+      </svg>
