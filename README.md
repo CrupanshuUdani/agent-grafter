@@ -32,32 +32,33 @@ through real setups.
 
 agent-grafter is a CLI that materializes a declared set of AI-agent
 config/state files onto one or more targets (agent harnesses, machines,
-whatever paths you name) — as copies, or as live links — from a single TOML
-manifest. **It works on Windows without administrator rights or Developer
-Mode.**
+whatever paths you name), as copies or as live links, from a single TOML
+manifest. It works on Windows without administrator rights or Developer
+Mode.
 
 ![Architecture diagram](docs/agent-grafter-architecture.svg)
 
 ## The name
 
-A graft joins a scion — the part you've deliberately grown — onto a
+A graft joins a scion (the part you've deliberately grown) onto a
 rootstock, so both share one living connection without either being copied.
 That's the `link` half of this tool: `memory/` on disk in two places is
 really one file, read and written by whichever target touches it. `copy`
-entries are the ordinary case — a duplicate, made and then left alone.
+entries are the ordinary case: a duplicate, made and then left alone.
 
 ## Why not just symlinks?
 
 Creating a real file or directory symlink on Windows requires either
-Developer Mode or `SeCreateSymbolicLinkPrivilege` (i.e. an elevated
-process). Most people don't have either turned on, and turning on Developer
-Mode isn't something a config-sync tool should ask you to do. Directory
-**junctions** (`mklink /J`) need neither — they're admin-free and work
-across local volumes — which is why `link` entries that name a directory
-become a junction on Windows and a symlink on POSIX. A `link` entry that
-names a single *file* has no admin-free link primitive on Windows at all, so
-it falls back to a copy there unless the process happens to be elevated or
-Developer Mode is on — see the platform matrix below.
+Developer Mode or `SeCreateSymbolicLinkPrivilege`, which in practice means
+running the process as administrator. Most people don't have either turned
+on, and turning on Developer Mode isn't something a config-sync tool should
+ask you to do. Directory junctions (`mklink /J`) need neither. Any user can
+create one, and they work across local volumes. That's why `link` entries
+that name a directory become a junction on Windows and a symlink on POSIX.
+A `link` entry that names a single *file* has no admin-free link primitive
+on Windows at all, so it falls back to a copy there unless the process
+happens to be elevated or Developer Mode is on. See the platform matrix
+below.
 
 ## Install
 
@@ -103,13 +104,13 @@ Two things the template doesn't spell out:
 
 - `source` resolves relative to the **manifest file's own directory**, not
   wherever you happen to run the command from. `dest` resolves relative to
-  the **process's current directory** instead — the two are independent, so
+  the **process's current directory** instead. The two are independent, so
   a relative `dest` behaves differently depending on where you invoke
   `agent-grafter` from. Use an absolute or `~`-prefixed `dest` unless you
   always run from the same place.
-- **The target root must already exist.** `apply` refuses to create it (a
-  typo in `dest` must not silently build a tree in the wrong place) — create
-  the directory yourself first.
+- The target root must already exist. `apply` refuses to create it (a
+  typo in `dest` must not silently build a tree in the wrong place), so
+  create the directory yourself first.
 
 Here's a filled-in version, with `source/copy-me.md` and `source/memory/`
 already created and `example-target/` already existing as an empty
@@ -162,7 +163,7 @@ directory's health.
 | `unlink` | Removes previously materialized links and copies that still match their source; refuses everything else | Yes, unless `--dry-run` |
 | `help` | Clap's built-in help, including per-subcommand help | No |
 
-There is no `explain` command — `apply --dry-run` already prints the full
+There is no `explain` command: `apply --dry-run` already prints the full
 plan, and `--help`/`help` cover the rest.
 
 ### Exit codes
@@ -179,28 +180,28 @@ plan, and `--help`/`help` cover the rest.
 
 ## What this tool will never do
 
-- **Never delete through a link.** Removing a link (`unlink`, or `apply`
+- Never delete through a link. Removing a link (`unlink`, or `apply`
   replacing one) removes the link object itself; the thing it points at is
   never touched, because link removal never traverses the link
   (`crates/safelink/src/remove.rs`).
-- **Never touch real data because a source went missing.** A missing
+- Never touch real data because a source went missing. A missing
   `link`/`copy` source is refused, not treated as "delete the destination":
   *"the declared source … does not exist; nothing was written"*
   (`crates/agent-grafter/src/apply.rs`). The same asymmetry holds for
-  pruning stale copies — an unreadable or absent source directory yields
-  zero prune candidates, never a partial guess, because under-reading the
-  source (not the destination) is the one mistake that would delete files
-  that are still correctly declared.
-- **Never link a whole config directory.** A manifest entry naming the
+  pruning stale copies: an unreadable or absent source directory yields
+  zero prune candidates, never a partial guess. Under-reading the source,
+  not the destination, is the one mistake that would delete files that are
+  still correctly declared.
+- Never link a whole config directory. A manifest entry naming the
   entire `source` root (or escaping it, or naming a known credential
-  filename like `.env` or `id_rsa` outright) is refused at parse time — you
+  filename like `.env` or `id_rsa` outright) is refused at parse time. You
   must declare individual files or subdirectories
   (`crates/agent-grafter/src/manifest.rs`).
 
 `apply` backs up anything it's about to overwrite into
 `.agrafter-backups/<UTC timestamp>/` under the target root, and keeps the
 last 10 such directories (`crates/agent-grafter/src/retention.rs`). `unlink`
-creates no backups and never touches that directory — it only ever removes
+creates no backups and never touches that directory: it only ever removes
 a link (which destroys nothing) or a plain file it can first prove is
 byte-identical to its still-existing source, so there is nothing of the
 user's to lose (`crates/agent-grafter/src/unlink.rs`).
@@ -216,7 +217,7 @@ user's to lose (`crates/agent-grafter/src/unlink.rs`).
 
 A file `link` entry is downgraded to a copy whenever the runtime
 capability probe (`safelink::capability::SymlinkProbe`) reports that a
-symlink can't be created near the destination — never assumed either way.
+symlink can't be created near the destination, never assumed either way.
 
 ## Building from source
 
@@ -224,7 +225,7 @@ symlink can't be created near the destination — never assumed either way.
 
 Minimum Supported Rust Version (MSRV): **1.88.0**.
 
-This is not the edition-2024 floor (1.85.0) — it's higher because this
+MSRV here is higher than the edition-2024 floor (1.85.0) because this
 codebase uses if-let chains (stabilized in 1.88.0), e.g. in
 `crates/agent-grafter/src/manifest.rs` and `apply.rs`. The workspace's
 `rust-version = "1.88"` (root `Cargo.toml`) enforces this at `cargo check`
@@ -245,16 +246,16 @@ compiled-in dependencies (notably `junction`, MIT).
 
 ## More
 
-- [`EXAMPLES.md`](EXAMPLES.md) — dual-boot, two agents sharing memory, a
+- [`EXAMPLES.md`](EXAMPLES.md): dual-boot, two agents sharing memory, a
   locked-down work laptop, a config repo in git, and how to undo it all.
-- [`FAQ.md`](FAQ.md) — junctions vs. symlinks, admin rights, unmounted
+- [`FAQ.md`](FAQ.md): junctions vs. symlinks, admin rights, unmounted
   drives, Cursor/Copilot/Hermes support, and more.
-- [`COMPARISON.md`](COMPARISON.md) — honest comparison against `chezmoi` and
+- [`COMPARISON.md`](COMPARISON.md): honest comparison against `chezmoi` and
   `agentsync`.
-- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — the Windows traps this
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md): the Windows traps this
   project has actually hit.
-- [`SECURITY.md`](SECURITY.md) — threat model and how to report a
+- [`SECURITY.md`](SECURITY.md): threat model and how to report a
   vulnerability.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — running the test suite, and what
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): running the test suite, and what
   evidence a Windows-only change needs.
 - [`CHANGELOG.md`](CHANGELOG.md).
