@@ -212,9 +212,9 @@ cargo test --workspace --all-targets
 
 ## License
 
-Apache-2.0. See `LICENSE`. Release binaries will ship a generated
-`THIRD-PARTY-LICENSES` file covering the license obligations of compiled-in
-dependencies (notably `junction`, MIT) — see `CONTRIBUTING.md`.
+Apache-2.0. See `LICENSE` and `NOTICE`. Release binaries will ship a
+generated `THIRD-PARTY-LICENSES` file covering the license obligations of
+compiled-in dependencies (notably `junction`, MIT).
 
 ## More
 

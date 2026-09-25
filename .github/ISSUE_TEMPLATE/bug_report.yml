@@ -1,0 +1,81 @@
+name: Bug report
+description: Report a bug in agent-grafter
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: steps-manifest
+    attributes:
+      label: Steps / manifest
+      description: |
+        Steps to reproduce the bug. Include the relevant `agent-grafter.toml` with private paths redacted.
+      render: toml
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: agent-grafter version
+      description: Output of `agent-grafter --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: elevated
+    attributes:
+      label: Running elevated / as administrator?
+      options:
+        - Yes
+        - No
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: dev-mode
+    attributes:
+      label: Windows Developer Mode
+      options:
+        - On
+        - Off
+        - Not sure
+        - Not Windows
+    validations:
+      required: true
+  - type: input
+    id: filesystem
+    attributes:
+      label: Filesystem of source and destination
+      description: e.g. NTFS, ext4, NTFS via ntfs3 on Linux
+    validations:
+      required: false
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Full output of the failing command plus `agent-grafter doctor`.
+      render: shell
+    validations:
+      required: false
