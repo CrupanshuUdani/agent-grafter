@@ -1820,7 +1820,12 @@ pub fn execute(plan: &Plan, probe: &dyn SymlinkProbe) -> Report {
             }
             Decision::Write => {
                 let body = match write_entry(planned, probe) {
-                    Ok(()) => format!("wrote: {}{}", planned.label, backup_note(planned, false)),
+                    Ok(applied) => format!(
+                        "wrote: {}{}{}",
+                        planned.label,
+                        fallback_note(planned, applied),
+                        backup_note(planned, false)
+                    ),
                     Err(e) => {
                         failed = true;
                         format!("failed: {}: {e}", planned.label)
@@ -1935,7 +1940,7 @@ fn prune_one(prune: &PlannedPrune) -> io::Result<Option<String>> {
 /// overwritten. There is no path here that removes a directory, recursively
 /// or otherwise; the only removal is `safelink::remove::remove_link`, which
 /// refuses anything that is not a link.
-fn write_entry(planned: &PlannedEntry, probe: &dyn SymlinkProbe) -> io::Result<()> {
+fn write_entry(planned: &PlannedEntry, probe: &dyn SymlinkProbe) -> io::Result<LinkOp> {
     let entry = planned.entry.as_ref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1969,7 +1974,19 @@ fn write_entry(planned: &PlannedEntry, probe: &dyn SymlinkProbe) -> io::Result<(
         safelink::remove::remove_link(&entry.dest)?;
     }
 
-    materialize(entry, probe, &MaterializeOptions::default()).map(|_| ())
+    materialize(entry, probe, &MaterializeOptions::default())
+}
+
+/// Said once, on the run that makes the copy. Later runs report `same`, so
+/// this is the only place a user learns that edits at `dest` stay local.
+fn fallback_note(planned: &PlannedEntry, applied: LinkOp) -> &'static str {
+    match &planned.entry {
+        Some(entry) if entry.op == LinkOp::FileSymlink && applied == LinkOp::FileCopy => {
+            " (as a copy: this system can't create a file symlink here, so edits \
+             at this path won't reach the source)"
+        }
+        _ => "",
+    }
 }
 
 /// A refusal that never got as far as a resolved `Entry`.

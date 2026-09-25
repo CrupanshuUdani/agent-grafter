@@ -357,6 +357,12 @@ fn a_downgraded_file_symlink_is_recognized_as_same_on_the_second_run() {
     );
     assert_eq!(fs::read(&dest).unwrap(), b"canonical contents");
 
+    assert!(
+        first.contains("wrote: AGENTS.md (as a copy:"),
+        "a link that became a copy must say so, or the user believes edits \
+         at dest reach the source: {first}"
+    );
+
     let after_first = snapshot(&env.dest());
     let second = env.apply(&manifest, &ForcedProbe(false)).text();
 
@@ -372,6 +378,23 @@ fn a_downgraded_file_symlink_is_recognized_as_same_on_the_second_run() {
         after_first,
         snapshot(&env.dest()),
         "the second run must not have touched anything"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn only_a_file_link_that_became_a_copy_carries_the_copy_notice() {
+    let env = Env::new();
+    env.write_source("AGENTS.md", b"linked");
+    env.write_source("rules.md", b"copied");
+    let manifest = env.write_manifest("link = [\"AGENTS.md\"]\ncopy = [\"rules.md\"]");
+
+    let out = env.apply(&manifest, &ForcedProbe(true)).text();
+    assert!(out.contains("wrote: AGENTS.md"), "{out}");
+    assert!(out.contains("wrote: rules.md"), "{out}");
+    assert!(
+        !out.contains("as a copy"),
+        "a real symlink, or a declared copy, is not a fallback: {out}"
     );
 }
 

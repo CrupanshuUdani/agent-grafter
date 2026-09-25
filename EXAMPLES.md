@@ -156,8 +156,16 @@ make a symlink and copies the file instead if it can't. It never assumes
 either way.
 
 So on a locked-down machine, prefer linking folders (`memory/`) over
-individual files. Anything you declare as a single linked file will quietly
-be a copy there, and changes to it won't flow back to the source.
+individual files. Anything you declare as a single linked file will be a
+copy there, and changes to it won't flow back to the source. `apply` says so
+on the run that makes the copy:
+
+```
+agent: wrote: AGENTS.md (as a copy: this system can't create a file symlink here, so edits at this path won't reach the source)
+```
+
+Later runs report that file as `same`, so that first run is the only
+notice.
 
 Junctions only work between local volumes, so the source has to be on a
 local drive, not a network share.

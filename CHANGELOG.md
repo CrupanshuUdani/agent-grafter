@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `unlink`: removes what `apply` created, refusing anything whose ownership cannot be proven.
 - `init`: interactive manifest generator; `init --print` writes a commented template to stdout.
 - `help` output via clap and a generated man page.
+- `apply` says when a declared file `link` was written as a copy because this system can't create a file symlink, since edits to that copy won't reach the source.
 
 ### Security
 
