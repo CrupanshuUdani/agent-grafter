@@ -25,6 +25,13 @@
 //!     `init` lives in `manifest.rs`, not here.
 //!   - **R10**: `cliclack`'s actual transitive-crate delta and gate results
 //!     are recorded in this task's report, not in code.
+//!   - **R11** (fix round 1): the existing-manifest refusal (R4) runs
+//!     *before* the TTY check (R1), not after -- an existing manifest is a
+//!     real, actionable problem regardless of whether stdin is a terminal.
+//!   - **R12** (fix round 1): a `--force` overwrite is atomic -- write to a
+//!     temp file in the manifest's own directory, `sync_all`, then `rename`
+//!     over the target; the temp file is removed on any error. See
+//!     [`atomic_overwrite`].
 //!
 //! **Testability, mirroring `safelink::capability::SymlinkProbe` and
 //! `crate::winenv::WindowsFacts`:** neither a closed nor a piped stdin
@@ -38,7 +45,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::manifest;
 
@@ -345,6 +352,53 @@ fn map_prompt_error(e: io::Error) -> InitOutcome {
     }
 }
 
+/// R12: overwrite `path` atomically -- write `contents` to a temp file in
+/// `path`'s own directory (same filesystem, so the rename below can never
+/// fall back to a copy), `sync_all` it to disk, then `rename` it over
+/// `path`. The temp file is removed on any error along the way.
+///
+/// This replaces a plain `std::fs::write`, which opens the existing target
+/// with `O_TRUNC` and writes into it in place: if the process dies or the
+/// disk fills partway through, the original content is already gone with
+/// nothing to replace it. `rename` on the same filesystem is atomic --
+/// `path` either still names the old content or already names the new
+/// content in full, never a partial mix of both, and never a missing file.
+/// No separate `.bak` is kept: the user already confirmed this overwrite
+/// (R6, defaulted to No), and atomic replace alone already guarantees the
+/// original survives any failure during the write itself.
+fn atomic_overwrite(path: &Path, contents: &str) -> io::Result<()> {
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "manifest path has no file name"))?
+        .to_string_lossy();
+    // pid + nanosecond timestamp: not cryptographically unique, but this
+    // tool never runs two concurrent `init --force` invocations against the
+    // same manifest as part of its own design, and a collision only ever
+    // means overwriting scratch space this same call already owns.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = dir.join(format!(".{file_name}.tmp.{}.{nanos}", std::process::id()));
+
+    let result = (|| -> io::Result<()> {
+        let mut tmp_file = std::fs::File::create(&tmp_path)?;
+        tmp_file.write_all(contents.as_bytes())?;
+        tmp_file.sync_all()?;
+        drop(tmp_file);
+        std::fs::rename(&tmp_path, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
+
 /// The whole decision path, independent of `clap` and of the real terminal:
 /// `is_tty` and `prompter` are both supplied by the caller so tests can
 /// drive this directly (`is_tty: true` plus a [`ScriptedPrompter`]) without
@@ -412,9 +466,10 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
     // R4: `create_new(true)` closes the check-then-write race the earlier
     // `.exists()` check above cannot, on its own, rule out. `--force` skips
     // that race protection deliberately -- overwriting is exactly what it
-    // asked for.
+    // asked for, but R12 requires the overwrite itself to be atomic (see
+    // `atomic_overwrite`), never an in-place truncate.
     let write_result = if args.force {
-        std::fs::write(&args.manifest_path, &contents)
+        atomic_overwrite(&args.manifest_path, &contents)
     } else {
         std::fs::OpenOptions::new()
             .write(true)
@@ -571,6 +626,121 @@ mod tests {
 
         assert!(matches!(outcome, InitOutcome::Wrote { .. }));
         assert_ne!(std::fs::read_to_string(&path).unwrap(), "sentinel");
+    }
+
+    fn force_overwrite_script() -> ScriptedPrompter {
+        ScriptedPrompter::new(vec![
+            Answer::Text("."),
+            Answer::Text("notes.md"),
+            Answer::Text(""),
+            Answer::Text("example"),
+            Answer::Text("~/.example"),
+            Answer::Confirm(false), // add another target?
+            Answer::Confirm(true),  // write this manifest?
+        ])
+    }
+
+    #[test]
+    fn force_overwrite_succeeds_and_leaves_no_temp_file_behind() {
+        // R12: the required minimum -- a successful --force overwrite
+        // updates the content and leaves nothing else in the directory.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-grafter.toml");
+        std::fs::write(&path, "old content").unwrap();
+        let mut prompter = force_overwrite_script();
+
+        let outcome = run(&args(path.clone(), true, false), true, &mut prompter);
+
+        assert!(matches!(outcome, InitOutcome::Wrote { .. }));
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_ne!(contents, "old content");
+        assert!(contents.contains("notes.md"));
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![std::ffi::OsString::from("agent-grafter.toml")],
+            "no temp file may remain after a successful overwrite, found: {entries:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn force_overwrite_replaces_the_manifest_via_atomic_rename_not_in_place_truncate() {
+        // R12: "atomic" means write-to-temp + rename, not truncate-then-write
+        // the target directly. A rename swaps the directory entry to a new
+        // inode; an in-place truncate (the old `std::fs::write` behavior)
+        // keeps the same inode. This is the one property that distinguishes
+        // the two implementations from the outside.
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-grafter.toml");
+        std::fs::write(&path, "old content").unwrap();
+        let original_ino = std::fs::metadata(&path).unwrap().ino();
+        let mut prompter = force_overwrite_script();
+
+        let outcome = run(&args(path.clone(), true, false), true, &mut prompter);
+
+        assert!(matches!(outcome, InitOutcome::Wrote { .. }));
+        let new_ino = std::fs::metadata(&path).unwrap().ino();
+        assert_ne!(
+            original_ino, new_ino,
+            "an atomic overwrite must replace the file via rename (a new inode), \
+             not truncate it in place (the same inode)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_force_overwrite_failure_leaves_the_original_manifest_untouched() {
+        // R12: if the write fails partway (simulated here by making the
+        // directory unwritable, so the temp file cannot even be created),
+        // the original manifest must be exactly as it was -- never
+        // truncated, never partially overwritten, and no temp file left
+        // behind either.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-grafter.toml");
+        std::fs::write(&path, "original content").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let creatable = dir.path().join("probe-write-access");
+        let dir_is_actually_locked = std::fs::write(&creatable, b"x").is_err();
+        if !dir_is_actually_locked {
+            // Running with privileges that ignore mode bits (root in a
+            // container). The case cannot be produced here.
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let mut prompter = force_overwrite_script();
+        let outcome = run(&args(path.clone(), true, false), true, &mut prompter);
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            matches!(outcome, InitOutcome::Io(_)),
+            "a failed overwrite must report an I/O error, not a false success"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "original content",
+            "a failed overwrite must never touch the original manifest"
+        );
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "agent-grafter.toml")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "no temp file may remain after a failed overwrite, found: {entries:?}"
+        );
     }
 
     #[test]
