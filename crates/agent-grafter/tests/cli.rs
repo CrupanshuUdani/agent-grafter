@@ -398,6 +398,33 @@ fn init_without_print_refuses_when_stdin_is_not_a_terminal() {
 }
 
 #[test]
+fn init_off_tty_with_an_existing_manifest_refuses_with_exit_4_not_2() {
+    // R11: the existing-manifest refusal must win over the non-interactive
+    // refusal when both apply at once. A user who already has a manifest
+    // and happens to be running off a terminal has a real problem ("this
+    // file exists, use --force"), not the generic "needs a terminal" one.
+    let env = TestEnv::with_manifest("sentinel content");
+
+    let result = env.run(&["init"]);
+
+    result.assert_exit_code(4);
+    let stderr = result.stderr();
+    assert!(
+        stderr.contains("agent-grafter.toml"),
+        "the refusal must name the existing manifest's path, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("--force"),
+        "the refusal must name --force as the way past it, got: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(env.path().join("agent-grafter.toml")).unwrap(),
+        "sentinel content",
+        "a refused init must never touch the existing manifest"
+    );
+}
+
+#[test]
 fn init_print_writes_nothing_and_emits_a_commented_template() {
     // R2/R3: --print is non-interactive, touches no file, and the template
     // carries explanatory comments rather than bare keys.

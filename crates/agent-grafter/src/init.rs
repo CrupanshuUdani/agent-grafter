@@ -359,15 +359,20 @@ pub fn run(args: &InitArgs, is_tty: bool, prompter: &mut dyn Prompter) -> InitOu
         };
     }
 
-    if !is_tty {
-        // R1, checked structurally before any prompt is constructed.
-        return InitOutcome::NonInteractive;
-    }
-
     if !args.force && args.manifest_path.exists() {
+        // R11: this refusal runs BEFORE the TTY check below. An existing
+        // manifest is a real, actionable problem ("this file exists, use
+        // --force") regardless of whether stdin happens to be a terminal --
+        // reporting "needs an interactive terminal" instead would tell an
+        // off-TTY user the wrong thing about their actual situation. Also
         // R4: before any prompt, so a user is never walked through the
         // whole question set only to be refused at the very end.
         return InitOutcome::AlreadyExists(args.manifest_path.clone());
+    }
+
+    if !is_tty {
+        // R1, checked structurally before any prompt is constructed.
+        return InitOutcome::NonInteractive;
     }
 
     let prompted = match run_prompts(prompter) {
@@ -523,6 +528,27 @@ mod tests {
         let outcome = run(&args(path.clone(), false, false), true, &mut prompter);
 
         assert!(matches!(outcome, InitOutcome::AlreadyExists(p) if p == path));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "sentinel");
+    }
+
+    #[test]
+    fn existing_manifest_without_force_is_refused_even_off_tty() {
+        // R11: the existing-manifest refusal (exit 4) must win over the
+        // non-interactive refusal (exit 2) -- a user with a real problem
+        // (a manifest already there) must be told that, not "needs a
+        // terminal", even when both conditions are true at once. Empty
+        // script: reaching a prompt here would panic either way.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-grafter.toml");
+        std::fs::write(&path, "sentinel").unwrap();
+        let mut prompter = ScriptedPrompter::new(vec![]);
+
+        let outcome = run(&args(path.clone(), false, false), false, &mut prompter);
+
+        assert!(
+            matches!(outcome, InitOutcome::AlreadyExists(p) if p == path),
+            "an existing manifest must refuse with AlreadyExists even off-TTY"
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "sentinel");
     }
 
