@@ -329,15 +329,16 @@ mod tests {
     /// for this destination -- never a forced answer that may not hold on
     /// the host running the test.
     ///
-    /// `ForcedProbe(true)` protects against an elevated host (CI) where a
-    /// symlink really can be created; it says nothing about a standard user
-    /// with Developer Mode off, where `SeCreateSymbolicLink` is absent and
-    /// the same claim is false. Asserting success unconditionally under a
-    /// forced probe is what made this test panic with OS error 1314 on a
-    /// real non-elevated Windows account while staying green on elevated CI.
-    /// `RealProbe` never claims a capability the OS lacks, so branching on
-    /// its own verdict is the only way to assert a fact instead of a
-    /// falsehood on some host.
+    /// `RealProbe` covers both directions, because it reports the truth for
+    /// whichever host runs it: the copy / `NotALink` branch on a standard
+    /// user account with Developer Mode off (no `SeCreateSymbolicLink`,
+    /// e.g. this machine), and the symlink / `FileLink` branch on an
+    /// elevated Windows host (CI) or POSIX. A forced `true` answer, asserted
+    /// unconditionally, is exactly what made the old version of this test
+    /// panic with OS error 1314 on a real non-elevated Windows account while
+    /// staying green on elevated CI -- `RealProbe` never claims a capability
+    /// the OS lacks, so branching on its own verdict is the only way to
+    /// assert a fact instead of a falsehood on some host.
     #[test]
     fn file_symlink_op_matches_what_the_real_probe_reports() {
         let tmp = tempfile::tempdir().unwrap();
@@ -390,12 +391,13 @@ mod tests {
     /// paper over the resulting failure with a silent copy.
     ///
     /// The destination is pre-occupied with a real file so `symlink_file`
-    /// cannot succeed regardless of the probe's answer: `prepare_dest_parent`
-    /// only ever touches `dest`'s parent, never `dest` itself, so this
-    /// occupies the one thing that makes `symlink_file` fail everywhere --
-    /// `EEXIST` on POSIX, `ERROR_ALREADY_EXISTS` (elevated) or OS error 1314
-    /// (non-elevated) on Windows. All three are errors, so this is observable
-    /// on every platform, not only on a non-elevated Windows account.
+    /// cannot succeed regardless of the *host's* privileges, forced-`true`
+    /// probe or not: `prepare_dest_parent` only ever touches `dest`'s
+    /// parent, never `dest` itself, so this occupies the one thing that
+    /// makes `symlink_file` fail everywhere -- `EEXIST` on POSIX,
+    /// `ERROR_ALREADY_EXISTS` (elevated) or OS error 1314 (non-elevated) on
+    /// Windows. All three are errors, so this is observable on every
+    /// platform, not only on a non-elevated Windows account.
     #[test]
     fn file_symlink_failure_propagates_as_an_error_not_a_silent_downgrade() {
         let tmp = tempfile::tempdir().unwrap();
