@@ -367,8 +367,8 @@ fn surfaces_the_os_error_unchanged_when_destination_is_read_only() {
 // ---------------------------------------------------------------------------
 // Row 10. Same-volume and cross-volume targets.
 // Windows-only -- POSIX symlinks already allow cross-filesystem linking
-/// trivially and this was never in question there. Only `windows-latest` CI
-/// is evidence for this row.
+// trivially and this was never in question there. Only `windows-latest` CI
+// is evidence for this row.
 // ---------------------------------------------------------------------------
 
 /// Junctions on Windows allow cross-volume linking, unlike POSIX symlinks
