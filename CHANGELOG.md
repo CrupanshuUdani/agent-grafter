@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Prebuilt binaries for Linux (x86_64/aarch64, static musl), macOS (x86_64/Apple Silicon) and Windows (x86_64/arm64) on GitHub Releases, with SHA256SUMS and THIRD-PARTY-LICENSES.
 - `safelink` crate: admin-free directory linking — NTFS junctions on Windows, symlinks elsewhere — with removal that never follows a link into its target.
 - Declared-pairs manifest (`agent-grafter.toml`): `copy` and `link` entries from a source directory to one or more named targets; known credential filenames and whole-directory entries are refused at parse time.
 - `apply`: materializes the manifest, backs up anything it replaces into `.agrafter-backups`, is idempotent, supports `--dry-run`, prunes stale destination files and sweeps old backups.

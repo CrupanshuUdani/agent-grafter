@@ -64,7 +64,51 @@ below.
 
 ## Install
 
-Not yet published to crates.io (alpha). Build from source:
+### Prebuilt binaries
+
+Download the archive for your platform from
+[GitHub Releases](https://github.com/CrupanshuUdani/agent-grafter/releases),
+extract it, and put `agent-grafter` on your `PATH`.
+
+| Archive | For |
+|---|---|
+| `agent-grafter-v<version>-x86_64-unknown-linux-musl.tar.gz` | Linux, x86_64, static (no glibc dependency) |
+| `agent-grafter-v<version>-aarch64-unknown-linux-musl.tar.gz` | Linux, ARM64, static (no glibc dependency) |
+| `agent-grafter-v<version>-x86_64-apple-darwin.tar.gz` | macOS, Intel |
+| `agent-grafter-v<version>-aarch64-apple-darwin.tar.gz` | macOS, Apple Silicon |
+| `agent-grafter-v<version>-x86_64-pc-windows-msvc.zip` | Windows, x86_64 |
+| `agent-grafter-v<version>-aarch64-pc-windows-msvc.zip` | Windows, ARM64 |
+
+Each release also ships `SHA256SUMS` and a `THIRD-PARTY-LICENSES` file
+covering the compiled-in dependencies. Verify a download before running it:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+#### Unsigned binaries
+
+These binaries aren't code-signed, so both macOS and Windows will warn on
+first run.
+
+- macOS: Gatekeeper blocks it on first run. Remove the quarantine flag with
+  `xattr -d com.apple.quarantine ./agent-grafter`, or allow it in System
+  Settings → Privacy & Security.
+- Windows: SmartScreen shows "Windows protected your PC". Choose More info →
+  Run anyway, after checking the checksum.
+
+They're unsigned because signing costs money (Apple Developer Program,
+Azure Trusted Signing), and this will be revisited if adoption justifies it.
+
+### From crates.io
+
+Once published to crates.io:
+
+```sh
+cargo install agent-grafter
+```
+
+### Build from source
 
 ```sh
 git clone https://github.com/CrupanshuUdani/agent-grafter
