@@ -513,4 +513,67 @@ mod tests {
             "a failed materialize must not modify an existing destination"
         );
     }
+
+    /// A forced `true` `SymlinkProbe` answer against an **empty** destination
+    /// must be honoured exactly where it is truthful, and refused -- with
+    /// nothing left behind -- exactly where it is not.
+    ///
+    /// `RealProbe.can_create_file_symlink` decides which branch this host
+    /// takes: on an elevated Windows host (CI), Developer Mode, Linux, or
+    /// macOS, the claim is truthful and the symlink is created. On a
+    /// standard Windows account with Developer Mode off, the claim is
+    /// false and the OS refuses with OS error 1314
+    /// (`ERROR_PRIVILEGE_NOT_HELD`) -- unlike
+    /// `file_symlink_failure_propagates_as_an_error_not_a_silent_downgrade`,
+    /// which occupies `dest` to force `ERROR_ALREADY_EXISTS` regardless of
+    /// privilege, this test leaves `dest` empty so privilege is the only
+    /// thing that can make it fail. Either way, `materialize` must never
+    /// silently substitute a copy for a declared `FileSymlink`: the branch
+    /// this asserts depends on `RealProbe`'s own verdict, never a forced
+    /// answer.
+    #[test]
+    fn a_forced_true_probe_is_honoured_where_true_and_refused_where_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("s.txt");
+        fs::write(&source, b"payload").unwrap();
+        let dest = tmp.path().join("d.txt");
+
+        // Not pre-created: this is what distinguishes this test from
+        // `file_symlink_failure_propagates_as_an_error_not_a_silent_downgrade`,
+        // whose occupied destination forces `ERROR_ALREADY_EXISTS`
+        // regardless of privilege. An empty destination lets privilege be
+        // the only thing that can make `ForcedProbe(true)` a lie.
+        let capable = RealProbe.can_create_file_symlink(&dest);
+
+        let entry = Entry {
+            source,
+            dest: dest.clone(),
+            op: LinkOp::FileSymlink,
+        };
+
+        let result = materialize(&entry, &ForcedProbe(true), &MaterializeOptions::default());
+
+        if capable {
+            let applied = result.unwrap();
+            assert_eq!(applied, LinkOp::FileSymlink);
+            assert_eq!(
+                crate::classify::classify(&dest).unwrap(),
+                crate::classify::LinkClass::FileLink,
+                "the forced claim was truthful on this host, so the \
+                 destination must really be a file symlink on disk"
+            );
+            assert_eq!(fs::read(&dest).unwrap(), b"payload");
+        } else {
+            assert!(
+                result.is_err(),
+                "the forced claim was false on this host, so the OS must \
+                 refuse -- never a silent copy fallback. Got: {result:?}"
+            );
+            assert!(
+                std::fs::symlink_metadata(&dest).is_err(),
+                "a false forced claim must leave nothing at dest -- a \
+                 silent copy_atomic fallback would leave a file there"
+            );
+        }
+    }
 }
