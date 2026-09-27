@@ -11,8 +11,6 @@
 # runner's filesystem -- no `docker create` / `docker cp` container dance
 # needed. Task 6 (multi-distro smoke test) consumes `dist/agent-grafter`.
 
-# rust:*-alpine ships a musl-based toolchain, so its host triple (for example
-# `x86_64-unknown-linux-musl`) is the native target -- no cross-toolchain juggling.
 FROM rust:1-alpine AS builder
 
 # musl-dev + a linker are required to link anything (including the musl libc
@@ -25,11 +23,9 @@ COPY crates ./crates
 
 # RUSTFLAGS: target-feature=+crt-static is the actual switch that produces a
 # genuinely static binary on musl -- the musl target alone does not guarantee
-# it (musl libc itself can still end up dynamically linked). This produces a
-# static-PIE binary (`file` reports "static-pie linked", not the older plain
-# "statically linked" wording) -- that is still genuinely static: zero
-# PT_INTERP, zero DT_NEEDED entries. See the task report for the ldd/file/
-# readelf proof this was checked, not assumed.
+# it (musl libc itself can still end up dynamically linked). On x86_64 `file`
+# reports "static-pie linked"; on aarch64 it reports "statically linked".
+# Both are still genuinely static: zero PT_INTERP, zero DT_NEEDED entries.
 # The host triple of rust:*-alpine is the musl target for whichever
 # architecture buildx selected, so one Dockerfile serves amd64 and arm64.
 RUN target="$(rustc -vV | sed -n 's/^host: //p')" \
