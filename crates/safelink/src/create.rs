@@ -33,7 +33,7 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
     // delete that concurrent success, not our own half-finished attempt.
     // `classify` distinguishes the two: only a plain (non-reparse-point)
     // directory is ours to remove.
-    junction::create(&target, link).map_err(|e| {
+    junction::create(&target, link).inspect_err(|_| {
         if link.is_dir()
             && !matches!(
                 crate::classify::classify(link),
@@ -42,7 +42,6 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
         {
             let _ = std::fs::remove_dir(link);
         }
-        e
     })
 }
 
