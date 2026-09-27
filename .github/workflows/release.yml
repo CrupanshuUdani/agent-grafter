@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Dockerfile
+      - about.toml
+      - about.hbs
+      - scripts/release-*.sh
+      - scripts/check-version.sh
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: prepare (version, notes, licences)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Version
+        id: version
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" == refs/tags/v* ]]; then
+            bash scripts/check-version.sh "$REF_NAME"
+            version="${REF_NAME#v}"
+          else
+            base="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "agent-grafter") | .version')"
+            version="${base}-dev.${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Release notes
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p extras
+          if [[ "$REF" == refs/tags/v* ]]; then
+            bash scripts/release-notes.sh "${REF_NAME#v}" > extras/notes.md
+          else
+            bash scripts/release-notes.sh Unreleased > extras/notes.md
+          fi
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: THIRD-PARTY-LICENSES
+        run: cargo about generate about.hbs -o extras/THIRD-PARTY-LICENSES
+      - name: Collect files shipped in every archive
+        run: cp LICENSE NOTICE README.md extras/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extras
+          path: extras/
+          if-no-files-found: error
+
+  linux:
+    name: build (${{ matrix.target }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            platform: linux/amd64
+            file_arch: x86-64
+            tested: tested natively (static, run in Alpine)
+          - target: aarch64-unknown-linux-musl
+            platform: linux/arm64
+            file_arch: ARM aarch64
+            tested: tested under QEMU emulation (static, run in Alpine)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        run: |
+          docker buildx build --platform "${{ matrix.platform }}" --target export \
+            --cache-from "type=gha,scope=release-${{ matrix.target }}" \
+            --cache-to "type=gha,mode=max,scope=release-${{ matrix.target }}" \
+            --output type=local,dest=dist -f Dockerfile .
+      - name: Verify architecture, static linking, and that it runs
+        run: |
+          set -euo pipefail
+          file dist/agent-grafter | tee /dev/stderr | grep -q "${{ matrix.file_arch }}"
+          if readelf -l dist/agent-grafter | grep -qi interp; then
+            echo "::error::binary needs a dynamic loader"; exit 1
+          fi
+          docker run --rm --platform "${{ matrix.platform }}" -v "$PWD/dist:/a:ro" alpine \
+            sh -c 'cp /a/agent-grafter /tmp/ag && chmod +x /tmp/ag && /tmp/ag --version'
+      - uses: actions/download-artifact@v4
+        with:
+          name: extras
+          path: extras
+      - name: Package
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TESTED: ${{ matrix.tested }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-package.sh "$VERSION" "${{ matrix.target }}" dist/agent-grafter out extras
+          echo "| \`${{ matrix.target }}\` | $TESTED |" > "out/${{ matrix.target }}.status"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: out/
+          if-no-files-found: error
+
+  native:
+    name: build (${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            exe: agent-grafter
+            run: native
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            exe: agent-grafter
+            run: rosetta
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe: agent-grafter.exe
+            run: native
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            exe: agent-grafter.exe
+            run: none
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p agent-grafter
+      - name: Run it where this runner can
+        id: run
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${{ matrix.exe }}"
+          case "${{ matrix.run }}" in
+            native)
+              "$bin" --version
+              echo "tested=tested natively" >> "$GITHUB_OUTPUT" ;;
+            rosetta)
+              if arch -x86_64 /usr/bin/true 2>/dev/null; then
+                arch -x86_64 "$bin" --version
+                echo "tested=tested under Rosetta 2" >> "$GITHUB_OUTPUT"
+              else
+                echo "tested=build only (no Rosetta 2 on the runner)" >> "$GITHUB_OUTPUT"
+              fi ;;
+            none)
+              echo "tested=build only (cross-compiled; no arm64 Windows runner)" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - uses: actions/download-artifact@v4
+        with:
+          name: extras
+          path: extras
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TESTED: ${{ steps.run.outputs.tested }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-package.sh "$VERSION" "${{ matrix.target }}" \
+            "target/${{ matrix.target }}/release/${{ matrix.exe }}" out extras
+          echo "| \`${{ matrix.target }}\` | $TESTED |" > "out/${{ matrix.target }}.status"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: out/
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: [prepare, linux, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble, checksum, write notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cp artifacts/build-*/*.tar.gz artifacts/build-*/*.zip dist/
+          cp artifacts/extras/THIRD-PARTY-LICENSES dist/
+          count="$(find dist -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)"
+          [ "$count" -eq 6 ] || { echo "::error::expected 6 archives, got $count"; exit 1; }
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          {
+            cat artifacts/extras/notes.md
+            echo
+            echo "## Binaries"
+            echo
+            echo "Unsigned: macOS Gatekeeper and Windows SmartScreen will warn on first run. See the README's Install section. Verify downloads against \`SHA256SUMS\`."
+            echo
+            echo "| Target | Status in this release's CI |"
+            echo "|---|---|"
+            cat artifacts/build-*/*.status | sort
+          } > notes.md
+          cat notes.md
+      - name: Create the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --title "agent-grafter $TAG" --notes-file notes.md dist/*
+      - name: Upload the dry run
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: |
+            dist/
+            notes.md
