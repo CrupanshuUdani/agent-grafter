@@ -1,0 +1,4 @@
+# LF in every checkout, whatever the local core.autocrlf says. Bash scripts
+# fail on CRLF, including under Git Bash on Windows CI runners, and the same
+# checkout may be used from both Windows and Linux.
+* text=auto eol=lf
