@@ -141,3 +141,14 @@ jobs:
         run: cargo check --workspace --all-targets --locked
       - name: Test (MSRV floor)
         run: cargo test --workspace --locked
+
+  release-scripts:
+    name: release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install 7z
+        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+      - name: Test release helper scripts
+        run: bash scripts/test-release-scripts.sh
