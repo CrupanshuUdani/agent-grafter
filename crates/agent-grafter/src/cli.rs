@@ -343,12 +343,20 @@ fn doctor(args: &DoctorArgs) -> ExitCode {
     }
 }
 
-/// `status`: read the manifest, and for each declared target, resolve each
-/// declared `link` entry's destination as `target.dest.join(entry_name)` and
-/// use `safelink::classify` on it to decide whether it is already correctly
-/// materialized. Either a nonexistent destination or one that classifies as
-/// `NotALink` counts as drift. Exit 3 if any entry drifted (in any target),
-/// 0 if all are in sync.
+/// `status`: read the manifest and report whether each declared `link` entry is
+/// already correctly materialized, taking the verdict from
+/// [`crate::apply::plan`] — the same planner `apply` executes and `doctor`
+/// diagnoses from. Exit 3 if any entry drifted (in any target), 0 if all are in
+/// sync.
+///
+/// Deliberately not a second, simpler check of its own. Asking the filesystem
+/// "is this destination a link?" gives the wrong answer wherever a file `link`
+/// was correctly written as a copy — which is every Windows account without
+/// elevation or Developer Mode. There the copy *is* the correct
+/// materialization, and only a decision path that knows about that downgrade
+/// can say so. A `status` that disagreed with `apply` and `doctor` about the
+/// same tree was the bug this replaced, and it is the command whose exit code
+/// scripts gate on.
 ///
 /// A manifest that declares `link` entries but no `[targets.*]` at all has
 /// nothing to check them against; that is drift, not a silent "in sync" —
