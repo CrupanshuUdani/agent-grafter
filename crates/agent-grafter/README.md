@@ -4,9 +4,10 @@ You write one small file listing what to share and where it should go.
 agent-grafter then puts those files in place on each system. Files you write
 yourself, like instructions and skills, are copied, so each system keeps
 working on its own. Files the agent writes, like its memory, are linked, so
-every system reads and writes the same copy. On Windows the links are
-directory junctions, which any user can create, so no admin rights or
-Developer Mode are needed.
+every system reads and writes the same copy. On Windows a linked
+directory becomes a junction, which any user can create without admin
+rights or Developer Mode. A linked single file falls back to a copy there
+unless the account can create symlinks.
 
 ## Install
 
@@ -26,8 +27,8 @@ agent-grafter apply           # write it
 agent-grafter status          # confirm the linked entries stay in sync
 ```
 
-It never deletes through a link: removing a link removes the link object
-itself, never the thing it points at.
+It never deletes through a link: `unlink`, or `apply` replacing a link,
+removes the link object and leaves its target untouched.
 
 ## More
 

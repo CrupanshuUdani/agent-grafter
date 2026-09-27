@@ -86,12 +86,16 @@ covering the compiled-in dependencies. Verify a download before running it:
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
+On Windows, compare the output of
+`Get-FileHash <archive> -Algorithm SHA256` in PowerShell with that
+archive's line in `SHA256SUMS`.
+
 #### Unsigned binaries
 
 These binaries aren't code-signed, so both macOS and Windows will warn on
 first run.
 
-- macOS: Gatekeeper blocks it on first run. Remove the quarantine flag with
+- macOS: Gatekeeper blocks it. Remove the quarantine flag with
   `xattr -d com.apple.quarantine ./agent-grafter`, or allow it in System
   Settings → Privacy & Security.
 - Windows: SmartScreen shows "Windows protected your PC". Choose More info →
