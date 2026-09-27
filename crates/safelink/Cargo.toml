@@ -8,8 +8,8 @@ rust-version.workspace = true
 description = "Explicit, non-guessing link materialization for Windows, macOS and Linux"
 keywords = ["symlink", "junction", "ntfs", "filesystem", "windows"]
 categories = ["filesystem", "os::windows-apis", "os::unix-apis"]
-# Excluded from THIRD-PARTY-LICENSES by cargo-about's private crate filter.
-publish = false
+# crates.io only; about.toml relies on this to leave our own crates out of THIRD-PARTY-LICENSES.
+publish = ["crates-io"]
 
 [dependencies]
 # Runtime dep, not dev-only: `RealProbe` (Task 6) uses it outside #[cfg(test)].

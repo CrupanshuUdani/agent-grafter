@@ -12,7 +12,8 @@ targets = [
     "aarch64-pc-windows-msvc",
 ]
 
-# Our own crates are not third-party.
 ignore-build-dependencies = false
 ignore-dev-dependencies = true
-private = { ignore = true }
+# Our own crates are not third-party. They declare publish = ["crates-io"];
+# registry dependencies declare nothing, so only ours are skipped.
+private = { ignore = true, registries = ["crates-io"] }

@@ -8,8 +8,8 @@ rust-version.workspace = true
 description = "CLI that materializes declared AI agent config/state file pairs across Windows/macOS/Linux"
 keywords = ["ai-agents", "dotfiles", "symlink", "junction", "cli"]
 categories = ["command-line-utilities", "config", "development-tools", "filesystem"]
-# Excluded from THIRD-PARTY-LICENSES by cargo-about's private crate filter.
-publish = false
+# crates.io only; about.toml relies on this to leave our own crates out of THIRD-PARTY-LICENSES.
+publish = ["crates-io"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
