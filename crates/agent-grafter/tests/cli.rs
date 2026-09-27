@@ -234,8 +234,17 @@ fn status_exits_0_when_the_declared_link_is_already_in_place() {
     // `dest.join("memory")` to the link and finds it in sync. Use the
     // absolute path, as a TOML *literal* (single-quoted) string so a
     // Windows path's backslashes are not read as escapes.
-    let source_dir = env.path().join("source");
-    fs::create_dir(&source_dir).expect("create source dir");
+    //
+    // The link must point at the entry's *declared* source — `source`
+    // defaults to `"."`, so that is `<manifest dir>/memory`, not some other
+    // directory that merely exists. `status` now takes its verdict from the
+    // same planner `apply` and `doctor` use, and that planner refuses an
+    // entry whose declared source is missing. Linking to an unrelated
+    // directory therefore reports drift, correctly: `apply` would refuse such
+    // a manifest and `doctor` already calls it drift, so a `status` that said
+    // "in sync" was the one disagreeing.
+    let source_dir = env.path().join("memory");
+    fs::create_dir(&source_dir).expect("create declared source dir");
     let dest_root = env.path().join("dest_root");
     fs::create_dir(&dest_root).expect("create dest root");
     let link = dest_root.join("memory");
