@@ -16,10 +16,17 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR supersedes the old dry run; tag and dispatch
+# runs always finish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   prepare:
     name: prepare (version, notes, licences)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -30,6 +37,7 @@ jobs:
         env:
           REF: ${{ github.ref }}
           REF_NAME: ${{ github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           if [[ "$REF" == refs/tags/v* ]]; then
@@ -37,7 +45,9 @@ jobs:
             version="${REF_NAME#v}"
           else
             base="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "agent-grafter") | .version')"
-            version="${base}-dev.${GITHUB_SHA::7}"
+            bash scripts/check-version.sh "v$base"
+            # On pull requests GITHUB_SHA is a synthetic merge commit.
+            version="${base}-dev.${HEAD_SHA::7}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Release notes
@@ -50,11 +60,20 @@ jobs:
           if [[ "$REF" == refs/tags/v* ]]; then
             bash scripts/release-notes.sh "${REF_NAME#v}" > extras/notes.md
           else
-            bash scripts/release-notes.sh Unreleased > extras/notes.md
+            # After a version bump, preview the section the tag will publish.
+            base="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "agent-grafter") | .version')"
+            if awk -v h="## [$base]" 'index($0, h) == 1 { f = 1 } END { exit !f }' CHANGELOG.md; then
+              bash scripts/release-notes.sh "$base" > extras/notes.md
+            else
+              # A dry run publishes nothing, so an empty [Unreleased] is fine.
+              rc=0
+              bash scripts/release-notes.sh Unreleased > extras/notes.md || rc=$?
+              [ "$rc" -eq 0 ] || [ "$rc" -eq 4 ] || exit "$rc"
+            fi
           fi
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-about
+          tool: cargo-about@0.9.2
       - name: THIRD-PARTY-LICENSES
         run: cargo about generate about.hbs -o extras/THIRD-PARTY-LICENSES
       - name: Collect files shipped in every archive
@@ -69,6 +88,7 @@ jobs:
     name: build (${{ matrix.target }})
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -87,9 +107,15 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build
         run: |
+          set -euo pipefail
+          cache_to=()
+          # A tag's cache can't be read by any later run, so tag builds only read.
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            cache_to=(--cache-to "type=gha,mode=max,scope=release-${{ matrix.target }}")
+          fi
           docker buildx build --platform "${{ matrix.platform }}" --target export \
             --cache-from "type=gha,scope=release-${{ matrix.target }}" \
-            --cache-to "type=gha,mode=max,scope=release-${{ matrix.target }}" \
+            "${cache_to[@]}" \
             --output type=local,dest=dist -f Dockerfile .
       - name: Verify architecture, static linking, and that it runs
         run: |
@@ -122,6 +148,7 @@ jobs:
     name: build (${{ matrix.target }})
     needs: prepare
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -150,6 +177,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p agent-grafter
       - name: Run it where this runner can
@@ -196,6 +224,7 @@ jobs:
     name: release
     needs: [prepare, linux, native]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
