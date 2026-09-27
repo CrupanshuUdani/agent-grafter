@@ -19,21 +19,23 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
     // manifest destination being created, not traversed past its length.
     let target = crate::paths::verbatim(target)?;
     // junction::create takes (target, junction) — target first.
-    // Cleanup here must remove only what *this call* created. `junction::create`
-    // calls `get_full_path` (GetFullPathNameW) before `create_dir`; it fails only
-    // on malformed input, never on a valid, existing target like the ones this
-    // code passes, so `create_dir` is effectively the first step that can fail.
-    // `AlreadyExists` can only come from that `create_dir`, so it means this call
-    // created nothing: something else is already at `link`, a pre-existing
-    // directory or another call's junction still being built. Any other error
-    // means our own `create_dir` succeeded and a later step failed, which is the
-    // case this cleanup exists for. `link.is_dir()` and `classify` remain
-    // necessary: an in-progress concurrent junction is still a plain directory,
-    // and `remove_dir` unlinks a *finished* junction's entry regardless of
-    // whether its target is empty, so without `classify` a successful concurrent
-    // junction would be removed too. Use `remove_dir`, never `remove_dir_all`: if
-    // anything other than an empty directory exists at `link`, something worse
-    // has gone wrong and we must not silently delete it.
+    // It creates `link` as a plain directory and only then sets the reparse
+    // point, so a failure after that first step may leave our own empty
+    // directory behind; this cleanup removes it. It must remove nothing else:
+    // - `AlreadyExists` means something was already at `link` when this call
+    //   tried to create it (for example a user's directory, or another call's
+    //   junction, finished or still being built), so this call created nothing
+    //   and must remove nothing.
+    // - For any other error, cleanup runs only if a directory is actually at
+    //   `link`, and that directory can only be ours: anything already there
+    //   would have made `create_dir` fail with `AlreadyExists`. This relies on
+    //   `get_full_path`, the one step before `create_dir`, never failing on the
+    //   valid, existing targets this code passes.
+    // - `classify` is defence in depth: `remove_dir` unlinks a finished
+    //   junction's entry whatever its target holds, so a junction is skipped.
+    // `remove_dir`, never `remove_dir_all`: if anything other than an empty
+    // directory is at `link`, something worse has gone wrong and we must not
+    // silently delete it.
     junction::create(&target, link).inspect_err(|e| {
         if e.kind() != io::ErrorKind::AlreadyExists
             && link.is_dir()
