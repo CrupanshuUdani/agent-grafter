@@ -20,17 +20,20 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
     let target = crate::paths::verbatim(target)?;
     // junction::create takes (target, junction) — target first.
     // Cleanup here must remove only what *this call* created. `junction::create`
-    // creates the empty `link` directory before setting the reparse point, so
-    // `AlreadyExists` can only mean that opening `create_dir` failed -- this
-    // call created nothing, and there is nothing of ours to clean up. Any
-    // other error means our own `create_dir` succeeded and a later step
-    // failed, which is the case this cleanup exists for. `link.is_dir()` and
-    // `classify` remain as defence in depth: an in-progress concurrent
-    // junction is still a plain directory, so `classify` alone cannot tell it
-    // apart from one we created ourselves. Use `remove_dir`, never
-    // `remove_dir_all`: if anything other than an empty directory exists at
-    // `link`, something worse has gone wrong and we must not silently delete
-    // it.
+    // calls `get_full_path` (GetFullPathNameW) before `create_dir`; it fails only
+    // on malformed input, never on a valid, existing target like the ones this
+    // code passes, so `create_dir` is effectively the first step that can fail.
+    // `AlreadyExists` can only come from that `create_dir`, so it means this call
+    // created nothing: something else is already at `link`, a pre-existing
+    // directory or another call's junction still being built. Any other error
+    // means our own `create_dir` succeeded and a later step failed, which is the
+    // case this cleanup exists for. `link.is_dir()` and `classify` remain
+    // necessary: an in-progress concurrent junction is still a plain directory,
+    // and `remove_dir` unlinks a *finished* junction's entry regardless of
+    // whether its target is empty, so without `classify` a successful concurrent
+    // junction would be removed too. Use `remove_dir`, never `remove_dir_all`: if
+    // anything other than an empty directory exists at `link`, something worse
+    // has gone wrong and we must not silently delete it.
     junction::create(&target, link).inspect_err(|e| {
         if e.kind() != io::ErrorKind::AlreadyExists
             && link.is_dir()
