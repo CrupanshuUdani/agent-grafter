@@ -1,0 +1,18 @@
+# Must match deny.toml's [licenses] allow list.
+accepted = ["MIT", "Apache-2.0", "Unicode-3.0"]
+
+# Every release target, so target-specific dependencies (windows-sys,
+# junction) are included whichever host generates the file.
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+
+# Our own crates are not third-party.
+ignore-build-dependencies = false
+ignore-dev-dependencies = true
+private = { ignore = true }

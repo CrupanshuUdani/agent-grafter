@@ -8,6 +8,8 @@ rust-version.workspace = true
 description = "CLI that materializes declared AI agent config/state file pairs across Windows/macOS/Linux"
 keywords = ["ai-agents", "dotfiles", "symlink", "junction", "cli"]
 categories = ["command-line-utilities", "config", "development-tools", "filesystem"]
+# Excluded from THIRD-PARTY-LICENSES by cargo-about's private crate filter.
+publish = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
