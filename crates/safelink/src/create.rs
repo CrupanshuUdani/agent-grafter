@@ -19,22 +19,21 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
     // manifest destination being created, not traversed past its length.
     let target = crate::paths::verbatim(target)?;
     // junction::create takes (target, junction) — target first.
-    // On failure it may leave the empty `link` directory behind (it creates
-    // the directory before setting the reparse point), so clean it up. Use
-    // `remove_dir`, never `remove_dir_all`: if anything other than an empty
-    // directory exists at `link`, something worse has gone wrong and we must
-    // not silently delete it.
-    //
-    // One more check is required before removing anything: `remove_dir` does
-    // not care whether a junction's *target* is empty, only whether the
-    // junction entry itself can be unlinked -- which it always can. So if a
-    // concurrent call already finished and turned `link` into a working
-    // junction, `link.is_dir()` is still true, and a naive cleanup here would
-    // delete that concurrent success, not our own half-finished attempt.
-    // `classify` distinguishes the two: only a plain (non-reparse-point)
-    // directory is ours to remove.
-    junction::create(&target, link).inspect_err(|_| {
-        if link.is_dir()
+    // Cleanup here must remove only what *this call* created. `junction::create`
+    // creates the empty `link` directory before setting the reparse point, so
+    // `AlreadyExists` can only mean that opening `create_dir` failed -- this
+    // call created nothing, and there is nothing of ours to clean up. Any
+    // other error means our own `create_dir` succeeded and a later step
+    // failed, which is the case this cleanup exists for. `link.is_dir()` and
+    // `classify` remain as defence in depth: an in-progress concurrent
+    // junction is still a plain directory, so `classify` alone cannot tell it
+    // apart from one we created ourselves. Use `remove_dir`, never
+    // `remove_dir_all`: if anything other than an empty directory exists at
+    // `link`, something worse has gone wrong and we must not silently delete
+    // it.
+    junction::create(&target, link).inspect_err(|e| {
+        if e.kind() != io::ErrorKind::AlreadyExists
+            && link.is_dir()
             && !matches!(
                 crate::classify::classify(link),
                 Ok(crate::classify::LinkClass::DirLink)
@@ -67,5 +66,33 @@ mod tests {
 
         // Reading through the link must see the target's contents.
         assert_eq!(fs::read(link.join("inside.txt")).unwrap(), b"hello");
+    }
+
+    /// A failed `create_dir_link` must never remove a directory it did not
+    /// create. An empty directory already at `link` is exactly what another
+    /// call's junction looks like mid-creation on Windows (`junction::create`
+    /// makes a plain directory first and sets the reparse point after), and it
+    /// is also what a user's own empty directory looks like.
+    #[test]
+    fn a_failed_create_never_removes_a_directory_it_did_not_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let link = tmp.path().join("link");
+        fs::create_dir(&link).unwrap();
+
+        assert!(
+            create_dir_link(&target, &link).is_err(),
+            "creating a link over an existing directory must fail"
+        );
+        assert!(
+            link.is_dir(),
+            "a failed create_dir_link removed a directory it did not create"
+        );
+        assert_eq!(
+            crate::classify::classify(&link).unwrap(),
+            crate::classify::LinkClass::NotALink,
+            "the pre-existing directory must be left exactly as it was, not replaced"
+        );
     }
 }
