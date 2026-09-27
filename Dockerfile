@@ -1,7 +1,7 @@
-# Builds `agent-grafter` as a fully static Linux binary (x86_64-unknown-linux-musl,
-# no libc dependency) and exposes it as a `scratch`-based export stage that CI
-# extracts via `docker buildx build --output`, without ever needing a runnable
-# image.
+# Builds `agent-grafter` as a fully static Linux binary (musl, for x86_64 or
+# aarch64, no libc dependency) and exposes it as a `scratch`-based export
+# stage that CI extracts via `docker buildx build --output`, without ever
+# needing a runnable image.
 #
 # CI usage (Task 5, S5 CI pipeline hardening):
 #
@@ -11,8 +11,8 @@
 # runner's filesystem -- no `docker create` / `docker cp` container dance
 # needed. Task 6 (multi-distro smoke test) consumes `dist/agent-grafter`.
 
-# rust:*-alpine ships a musl-based toolchain, so `x86_64-unknown-linux-musl`
-# is effectively the native target here -- no cross-toolchain juggling.
+# rust:*-alpine ships a musl-based toolchain, so its host triple (for example
+# `x86_64-unknown-linux-musl`) is the native target -- no cross-toolchain juggling.
 FROM rust:1-alpine AS builder
 
 # musl-dev + a linker are required to link anything (including the musl libc
@@ -30,10 +30,14 @@ COPY crates ./crates
 # "statically linked" wording) -- that is still genuinely static: zero
 # PT_INTERP, zero DT_NEEDED entries. See the task report for the ldd/file/
 # readelf proof this was checked, not assumed.
-RUN RUSTFLAGS="-C target-feature=+crt-static" \
-    cargo build --release --target x86_64-unknown-linux-musl -p agent-grafter
+# The host triple of rust:*-alpine is the musl target for whichever
+# architecture buildx selected, so one Dockerfile serves amd64 and arm64.
+RUN target="$(rustc -vV | sed -n 's/^host: //p')" \
+ && RUSTFLAGS="-C target-feature=+crt-static" \
+    cargo build --release --locked --target "$target" -p agent-grafter \
+ && cp "target/$target/release/agent-grafter" /agent-grafter
 
 # Export-only stage: contains nothing but the binary. Never meant to be run
 # as a container -- only to be extracted with `docker buildx build --output`.
 FROM scratch AS export
-COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/agent-grafter /agent-grafter
+COPY --from=builder /agent-grafter /agent-grafter
