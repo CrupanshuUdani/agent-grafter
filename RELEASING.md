@@ -26,9 +26,9 @@
 
    ```sh
    gh workflow run release.yml --ref main
-   gh run list --workflow release.yml --limit 1   # note the run ID
+   gh run list --workflow release.yml --branch main --event workflow_dispatch --limit 1   # note the run ID
    gh run watch <run-id>
-   gh run download <run-id> -n release-dry-run
+   gh run download <run-id> -n release-dry-run -D /tmp/release-dry-run
    ```
 
    Dry-run archives are named `agent-grafter-vX.Y.Z-dev.<sha>-<target>`.
@@ -38,14 +38,12 @@
    the notes the release will carry. For a first release, or any change
    that could affect Windows, also run the Gate B checklist below and
    comment its output on the merged PR from step 1.
-3. Tag the commit the dry run built, and push the tag. The dry run's
-   archive names end in `-dev.` plus the first 7 characters of that
-   commit's SHA; check they match `HEAD` before tagging.
+3. Tag the commit the dry run built, and push the tag.
 
    ```sh
    git switch main && git pull --ff-only
-   git rev-parse HEAD | cut -c1-7
-   git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z
+   sha="$(gh run view <run-id> --json headSha -q .headSha)"
+   git tag -a vX.Y.Z "$sha" -m vX.Y.Z && git push origin vX.Y.Z
    ```
 
    The tag push runs `release.yml` again, this time publishing the GitHub
@@ -61,6 +59,8 @@
    ```sh
    git push --delete origin vX.Y.Z && git tag -d vX.Y.Z
    ```
+
+   Publish to crates.io only once the repository is public.
 5. Optionally publish to crates.io:
    `gh workflow run publish-crates.yml -f tag=vX.Y.Z -f confirm=publish`.
    This is a separate, manual step: pushing a tag never publishes to
