@@ -150,9 +150,12 @@ $ agent-grafter status
 example: in sync: memory
 ```
 
-`status` checks `link` entries against the current filesystem; `doctor` (see
-below) checks everything, `copy` entries included, plus your backup
-directory's health.
+`status` reports on `link` entries only, and takes its verdict from the same
+plan `apply` would carry out, so the two never disagree about an entry —
+including a file `link` written as a copy because this system can't create a
+file symlink, which counts as correctly in place, not as drift. `doctor` (see
+below) checks everything, `copy` entries included, plus link-target drift and
+your backup directory's health.
 
 ## Commands
 

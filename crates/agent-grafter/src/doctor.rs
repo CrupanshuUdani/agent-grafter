@@ -1,10 +1,12 @@
 //! `doctor`: read-only diagnostics over the current install.
 //!
 //! Every check here inspects and prints; none of them write, link, delete,
-//! or back anything up. That is a stronger promise than `status`'s (which
-//! only checks `link` entries against `safelink::classify`): `doctor` also
-//! answers "is the current state ambiguous in a way `apply` cannot see",
-//! which needs more than a kind check at each destination.
+//! or back anything up. That is a stronger promise than `status`'s, which
+//! reports on `link` entries only. Both take each entry's verdict from the
+//! same [`crate::apply::plan`], so they cannot disagree about one; `doctor`
+//! additionally answers "is the current state ambiguous in a way `apply`
+//! cannot see", which needs more than that per-entry decision — link-target
+//! drift and backup-root health among them.
 //!
 //! Checks 3 and 4 below are laid out as separate, individually named
 //! functions rather than folded into one big loop, on purpose: a later task

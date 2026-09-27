@@ -19,11 +19,12 @@
 //! already prints the full plan, and clap's own `help` subcommand (see below)
 //! covers the rest of what a stub named `explain` would have offered.
 
-use std::io::{ErrorKind, IsTerminal};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::apply::Decision;
 use crate::manifest::{self, Manifest};
 
 /// The exit codes this CLI promises to scripts and hooks. See the task
@@ -342,12 +343,20 @@ fn doctor(args: &DoctorArgs) -> ExitCode {
     }
 }
 
-/// `status`: read the manifest, and for each declared target, resolve each
-/// declared `link` entry's destination as `target.dest.join(entry_name)` and
-/// use `safelink::classify` on it to decide whether it is already correctly
-/// materialized. Either a nonexistent destination or one that classifies as
-/// `NotALink` counts as drift. Exit 3 if any entry drifted (in any target),
-/// 0 if all are in sync.
+/// `status`: read the manifest and report whether each declared `link` entry is
+/// already correctly materialized, taking the verdict from
+/// [`crate::apply::plan`] — the same planner `apply` executes and `doctor`
+/// diagnoses from. Exit 3 if any entry drifted (in any target), 0 if all are in
+/// sync.
+///
+/// Deliberately not a second, simpler check of its own. Asking the filesystem
+/// "is this destination a link?" gives the wrong answer wherever a file `link`
+/// was correctly written as a copy — which is every Windows account without
+/// elevation or Developer Mode. There the copy *is* the correct
+/// materialization, and only a decision path that knows about that downgrade
+/// can say so. A `status` that disagreed with `apply` and `doctor` about the
+/// same tree was the bug this replaced, and it is the command whose exit code
+/// scripts gate on.
 ///
 /// A manifest that declares `link` entries but no `[targets.*]` at all has
 /// nothing to check them against; that is drift, not a silent "in sync" —
@@ -361,29 +370,17 @@ fn status(args: &StatusArgs) -> ExitCode {
         }
     };
 
-    let mut drifted = false;
-    let targets = sorted_target_names(&manifest);
+    let (lines, drifted) = match status_report(
+        &manifest,
+        &manifest_dir(&args.manifest),
+        &safelink::capability::RealProbe,
+    ) {
+        Ok(report) => report,
+        Err(()) => return ExitCode::UnexpectedError,
+    };
 
-    if targets.is_empty() {
-        for name in &manifest.link {
-            println!("drift: {name} (no targets declared)");
-            drifted = true;
-        }
-    } else {
-        for target_name in targets {
-            let target = &manifest.targets[target_name];
-            for name in &manifest.link {
-                let dest = target.dest.join(name);
-                match entry_in_sync(&dest) {
-                    Ok(true) => println!("{target_name}: in sync: {name}"),
-                    Ok(false) => {
-                        println!("{target_name}: drift: {name}");
-                        drifted = true;
-                    }
-                    Err(()) => return ExitCode::UnexpectedError,
-                }
-            }
-        }
+    for line in &lines {
+        println!("{line}");
     }
 
     if drifted {
@@ -393,28 +390,124 @@ fn status(args: &StatusArgs) -> ExitCode {
     }
 }
 
-/// Target names in a deterministic (sorted) order, since `Manifest::targets`
-/// is a `HashMap` and iteration order over it is otherwise unspecified.
-fn sorted_target_names(manifest: &Manifest) -> Vec<&String> {
-    let mut names: Vec<&String> = manifest.targets.keys().collect();
-    names.sort();
-    names
+/// The report `status` prints, separated from the printing and the exit code so
+/// the verdict itself is unit-testable with an injected probe — the real one
+/// answers differently per machine, which is exactly the axis this has to be
+/// tested across.
+///
+/// Returns the lines to print and whether anything drifted; `Err(())` for a
+/// genuine I/O failure while inspecting the filesystem.
+fn status_report(
+    manifest: &Manifest,
+    manifest_dir: &Path,
+    probe: &dyn safelink::capability::SymlinkProbe,
+) -> Result<(Vec<String>, bool), ()> {
+    let mut lines = Vec::new();
+    let mut drifted = false;
+
+    if manifest.targets.is_empty() {
+        for name in &manifest.link {
+            lines.push(format!("drift: {name} (no targets declared)"));
+            drifted = true;
+        }
+        return Ok((lines, drifted));
+    }
+
+    // The planner's verdict, not a second opinion. Asking the filesystem
+    // "is this a link?" is the wrong question wherever a file `link` was
+    // correctly written as a copy, which is every non-elevated Windows
+    // account: the entry is materialized exactly as it should be, and only a
+    // decision path that knows about the downgrade can say so. `apply` and
+    // `doctor` both already ask this way.
+    let plan = crate::apply::plan(manifest, manifest_dir, probe);
+
+    // `plan` walks `copy` and `link` alike; `status` reports only `link`
+    // entries, which is its documented scope and the sole reason it is not
+    // just `doctor`. Filtered on `declared` rather than `label`, so an entry
+    // is matched by the manifest text that declared it.
+    for planned in plan
+        .entries
+        .iter()
+        .filter(|p| manifest.link.contains(&p.declared))
+    {
+        let target = planned.target.as_deref();
+        match &planned.decision {
+            Decision::Same => {
+                lines.push(with_target(target, &format!("in sync: {}", planned.label)));
+            }
+            Decision::Write => {
+                drifted = true;
+                lines.push(with_target(target, &format!("drift: {}", planned.label)));
+            }
+            Decision::Refused(reason) => {
+                drifted = true;
+                lines.push(with_target(
+                    target,
+                    &format!("drift: {}: {reason}", planned.label),
+                ));
+            }
+        }
+    }
+
+    Ok((lines, drifted))
 }
 
-/// Returns `Ok(true)` if in sync, `Ok(false)` if drifted, `Err(())` for a
-/// genuine (non-"missing") I/O failure while classifying.
-fn entry_in_sync(dest: &Path) -> Result<bool, ()> {
-    match safelink::classify::classify(dest) {
-        Ok(safelink::classify::LinkClass::NotALink) => Ok(false),
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
-        Err(_) => Err(()),
+/// `"{target}: {message}"`, or just the message when the manifest declares no
+/// targets. Matches the prefixing `apply` and `doctor` already use, so all
+/// three commands' output reads the same way.
+fn with_target(target: Option<&str>, message: &str) -> String {
+    match target {
+        Some(name) => format!("{name}: {message}"),
+        None => message.to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ExitCode;
+
+    /// A Windows account without elevation or Developer Mode cannot create a
+    /// file symlink, so `apply` deliberately writes a declared file `link` as a
+    /// copy and says so in its output. On such a machine that copy *is* the
+    /// correct materialization, and `status` must agree with `doctor`, which
+    /// already reports it in sync. Before this test, `status` classified the
+    /// destination itself, saw `NotALink`, and reported permanent drift with
+    /// exit 3 on every correctly-applied Windows install.
+    ///
+    /// `ForcedProbe(false)` reproduces that machine on any host, an elevated CI
+    /// runner included — the reverse of the trick
+    /// `file_symlink_downgrades_to_copy_when_unsupported` uses in `safelink`.
+    #[test]
+    fn a_file_link_written_as_a_copy_is_in_sync_not_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(source.join("AGENTS.md"), b"rules").unwrap();
+
+        let manifest = crate::manifest::parse(&format!(
+            "source = 'src'\nlink = ['AGENTS.md']\n\n[targets.win]\ndest = '{}'\n",
+            dest.display()
+        ))
+        .unwrap();
+
+        let probe = safelink::capability::ForcedProbe(false);
+        let plan = crate::apply::plan(&manifest, dir.path(), &probe);
+        let report = crate::apply::execute(&plan, &probe);
+        assert!(
+            !report.failed && !report.refused,
+            "apply must materialize the entry first: {:?}",
+            report.lines
+        );
+
+        let (lines, drifted) = super::status_report(&manifest, dir.path(), &probe).unwrap();
+
+        assert!(
+            !drifted,
+            "a file link correctly written as a copy is not drift, got: {lines:?}"
+        );
+    }
 
     #[test]
     fn exit_codes_match_the_documented_table() {
