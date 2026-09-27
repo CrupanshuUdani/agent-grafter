@@ -19,20 +19,21 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
     // manifest destination being created, not traversed past its length.
     let target = crate::paths::verbatim(target)?;
     // junction::create takes (target, junction) — target first.
-    // It creates `link` as a plain directory and only then sets the reparse
-    // point, so a failure after that first step may leave our own empty
+    // It calls `create_dir` to make `link` a plain directory and only then sets
+    // the reparse point, so a failure after `create_dir` may leave our own empty
     // directory behind; this cleanup removes it. It must remove nothing else:
     // - `AlreadyExists` means something was already at `link` when this call
-    //   tried to create it (for example a user's directory, or another call's
-    //   junction, finished or still being built), so this call created nothing
-    //   and must remove nothing.
-    // - For any other error, cleanup runs only if a directory is actually at
-    //   `link`, and that directory can only be ours: anything already there
-    //   would have made `create_dir` fail with `AlreadyExists`. This relies on
-    //   `get_full_path`, the one step before `create_dir`, never failing on the
-    //   valid, existing targets this code passes.
-    // - `classify` is defence in depth: `remove_dir` unlinks a finished
-    //   junction's entry whatever its target holds, so a junction is skipped.
+    //   tried to create it (for example a user's file or directory, or another
+    //   call's junction, finished or still being built), so this call created
+    //   nothing and must remove nothing.
+    // - For any other error, cleanup runs only if a directory is at `link`, on
+    //   the assumption that it is ours. That rests on two expectations, not
+    //   guarantees: `create_dir` reports an existing path as `AlreadyExists`,
+    //   and `get_full_path`, the one step before it, does not fail on the
+    //   valid, existing targets this code passes. If either broke, this could
+    //   remove an empty directory this call did not create.
+    // - `classify` returning `DirLink` skips a finished junction, since
+    //   `remove_dir` unlinks a junction's entry whatever its target holds.
     // `remove_dir`, never `remove_dir_all`: if anything other than an empty
     // directory is at `link`, something worse has gone wrong and we must not
     // silently delete it.
