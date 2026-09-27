@@ -370,14 +370,11 @@ fn status(args: &StatusArgs) -> ExitCode {
         }
     };
 
-    let (lines, drifted) = match status_report(
+    let (lines, drifted) = status_report(
         &manifest,
         &manifest_dir(&args.manifest),
         &safelink::capability::RealProbe,
-    ) {
-        Ok(report) => report,
-        Err(()) => return ExitCode::UnexpectedError,
-    };
+    );
 
     for line in &lines {
         println!("{line}");
@@ -395,13 +392,12 @@ fn status(args: &StatusArgs) -> ExitCode {
 /// answers differently per machine, which is exactly the axis this has to be
 /// tested across.
 ///
-/// Returns the lines to print and whether anything drifted; `Err(())` for a
-/// genuine I/O failure while inspecting the filesystem.
+/// Returns the lines to print and whether anything drifted.
 fn status_report(
     manifest: &Manifest,
     manifest_dir: &Path,
     probe: &dyn safelink::capability::SymlinkProbe,
-) -> Result<(Vec<String>, bool), ()> {
+) -> (Vec<String>, bool) {
     let mut lines = Vec::new();
     let mut drifted = false;
 
@@ -410,7 +406,7 @@ fn status_report(
             lines.push(format!("drift: {name} (no targets declared)"));
             drifted = true;
         }
-        return Ok((lines, drifted));
+        return (lines, drifted);
     }
 
     // The planner's verdict, not a second opinion. Asking the filesystem
@@ -449,7 +445,7 @@ fn status_report(
         }
     }
 
-    Ok((lines, drifted))
+    (lines, drifted)
 }
 
 /// `"{target}: {message}"`, or just the message when the manifest declares no
@@ -501,7 +497,7 @@ mod tests {
             report.lines
         );
 
-        let (lines, drifted) = super::status_report(&manifest, dir.path(), &probe).unwrap();
+        let (lines, drifted) = super::status_report(&manifest, dir.path(), &probe);
 
         assert!(
             !drifted,
