@@ -331,9 +331,9 @@ mod tests {
     ///
     /// `RealProbe` covers both directions, because it reports the truth for
     /// whichever host runs it: the copy / `NotALink` branch on a standard
-    /// user account with Developer Mode off (no `SeCreateSymbolicLink`,
-    /// e.g. this machine), and the symlink / `FileLink` branch on an
-    /// elevated Windows host (CI) or POSIX. A forced `true` answer, asserted
+    /// Windows account with Developer Mode off (no `SeCreateSymbolicLink`),
+    /// and the symlink / `FileLink` branch on an elevated Windows host (CI)
+    /// or POSIX. A forced `true` answer, asserted
     /// unconditionally, is exactly what made the old version of this test
     /// panic with OS error 1314 on a real non-elevated Windows account while
     /// staying green on elevated CI -- `RealProbe` never claims a capability
@@ -394,10 +394,15 @@ mod tests {
     /// cannot succeed regardless of the *host's* privileges, forced-`true`
     /// probe or not: `prepare_dest_parent` only ever touches `dest`'s
     /// parent, never `dest` itself, so this occupies the one thing that
-    /// makes `symlink_file` fail everywhere -- `EEXIST` on POSIX,
-    /// `ERROR_ALREADY_EXISTS` (elevated) or OS error 1314 (non-elevated) on
-    /// Windows. All three are errors, so this is observable on every
-    /// platform, not only on a non-elevated Windows account.
+    /// makes `symlink_file` fail everywhere. Verified directly on a standard
+    /// (non-elevated) Windows account with Developer Mode off:
+    /// `CreateSymbolicLinkW` checks for an existing file before it checks
+    /// privilege, so an occupied destination fails with "already exists"
+    /// (OS error 183) on every Windows host, elevated or not -- not the
+    /// privilege error (1314) this test is otherwise easy to confuse it
+    /// with -- and with `EEXIST` on POSIX. All are errors, so this is
+    /// observable on every platform, not only on a
+    /// non-elevated Windows account.
     #[test]
     fn file_symlink_failure_propagates_as_an_error_not_a_silent_downgrade() {
         let tmp = tempfile::tempdir().unwrap();
