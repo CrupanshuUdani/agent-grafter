@@ -35,10 +35,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Tag matches the crate versions
         run: bash scripts/check-version.sh "$TAG"
-      - name: The GitHub Release for this tag exists
+      - name: The GitHub Release for this tag is published
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release view "$TAG" --json tagName
+        run: |
+          set -euo pipefail
+          draft="$(gh release view "$TAG" --json isDraft -q .isDraft)"
+          [ "$draft" = "false" ] || { echo "::error::the $TAG release is still a draft; publish it first"; exit 1; }
       - name: Package and verify both crates before publishing anything
         run: cargo publish --dry-run --locked -p safelink -p agent-grafter
       - name: Publish safelink

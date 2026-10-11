@@ -294,12 +294,14 @@ jobs:
             cat artifacts/build-*/*.status | sort
           } > notes.md
           cat notes.md
-      - name: Create the GitHub Release
+      - name: Create the GitHub Release as a draft
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --verify-tag --title "agent-grafter $TAG" --notes-file notes.md dist/*
+        # A draft isn't public, so Gate B can run on the exact assets before
+        # anyone can download them.
+        run: gh release create "$TAG" --draft --verify-tag --title "agent-grafter $TAG" --notes-file notes.md dist/*
       - name: Upload the dry run
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
