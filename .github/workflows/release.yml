@@ -119,10 +119,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+      # buildx's gha cache needs the runtime token, which `run:` steps don't get otherwise.
+      - uses: crazy-max/ghaction-github-runtime@v4
       - name: Build
         run: |
           set -euo pipefail
+          cache_to=()
+          # A tag's cache can't be read by any later run, so tag builds only read.
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            cache_to=(--cache-to "type=gha,mode=max,scope=release-${{ matrix.target }}")
+          fi
           docker buildx build --platform "${{ matrix.platform }}" --target export \
+            --cache-from "type=gha,scope=release-${{ matrix.target }}" \
+            "${cache_to[@]}" \
             --output type=local,dest=dist -f Dockerfile .
       - name: Verify architecture, static linking, and that it runs
         run: |
