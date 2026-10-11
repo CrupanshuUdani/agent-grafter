@@ -392,7 +392,7 @@ fn creates_links_for_both_same_volume_and_cross_volume_targets() {
 
     // Cross-volume target: use the system temp directory's volume as a
     // different mount point if one is available, otherwise document that
-    // this specific sub-case is deferred to manual Gate B verification.
+    // this specific sub-case is left to a manual run on a real Windows machine.
     // The CI runner typically exposes multiple drive letters; try to find
     // one that is not the same as our tempdir's drive.
     let cross_volume = if let Some(other_vol) = find_other_volume(d.path()) {
