@@ -47,6 +47,20 @@
    The tag push runs `release.yml` again, this time creating a draft
    GitHub Release with all the assets. A draft is not public, and
    `releases/latest` ignores it.
+
+   A tag run that fails before its "Create the GitHub Release as a draft"
+   step created nothing. A transient failure can be re-run from the
+   Actions tab, since the re-run still runs on the tag. Otherwise delete
+   the tag, fix the cause in a PR, and start again from step 2:
+
+   ```sh
+   git push --delete origin vX.Y.Z && git tag -d vX.Y.Z
+   ```
+
+   If it fails in that step, a partial draft may exist, and a re-run
+   stops rather than add a second one. Delete the draft with
+   `gh release delete vX.Y.Z --yes` (this keeps the tag), check that
+   `gh release list` shows no vX.Y.Z entry, then re-run.
 4. Run Gate B on the draft. It is required for a first release or any
    change that could affect Windows; otherwise go straight to step 7.
    Open an issue for it if one doesn't exist (title pattern "Gate B:
@@ -57,20 +71,12 @@
    ```
 
    Run the Gate B checklist below and post the full output on that issue.
-5. If Gate B fails, nothing is public yet, so delete the draft and its
+5. If Gate B fails, no release is public yet (though the tag is visible
+   to anyone who can read the repository), so delete the draft and its
    tag, fix the cause in a PR, and start again from step 2:
 
    ```sh
    gh release delete vX.Y.Z --yes --cleanup-tag && git tag -d vX.Y.Z
-   ```
-
-   A tag run that fails before its "Create the GitHub Release as a draft"
-   step created nothing. A transient failure can be re-run from the
-   Actions tab, since the re-run still runs on the tag. Otherwise delete
-   the tag, fix the cause in a PR, and start again from step 2:
-
-   ```sh
-   git push --delete origin vX.Y.Z && git tag -d vX.Y.Z
    ```
 6. Once Gate B passes, open a docs PR that records the result where the
    repo states Windows support (the standard-user row of the README
@@ -78,15 +84,17 @@
    `Closes #N`. Merge it. The release archives carry the README as of the
    tagged commit, so they won't show this result; the release notes link
    the Gate B issue instead (next step).
-7. Edit the draft's notes to add a line linking the Gate B issue (when
-   Gate B ran), either on the release page or with
-   `gh release edit vX.Y.Z --notes-file notes.md`. The flag replaces the
-   whole body, so start from the current one with
-   `gh release view vX.Y.Z --json body -q .body > notes.md`. Check the
-   page: six archives, `SHA256SUMS`, and `THIRD-PARTY-LICENSES` should all
-   be attached. Then publish the release:
+7. Publish the draft. Save its notes, add a line linking the Gate B issue
+   (when Gate B ran), and write them back. `--notes-file` replaces the
+   whole body, which is why the first command saves it. Then check the
+   page: six archives, `SHA256SUMS`, and `THIRD-PARTY-LICENSES` should
+   all be attached. You can also edit the notes on the release page
+   instead.
 
    ```sh
+   gh release view vX.Y.Z --json body -q .body > /tmp/notes-vX.Y.Z.md
+   # edit /tmp/notes-vX.Y.Z.md, then:
+   gh release edit vX.Y.Z --notes-file /tmp/notes-vX.Y.Z.md
    gh release edit vX.Y.Z --draft=false
    ```
 8. Optionally publish to crates.io, but only once the repository is
