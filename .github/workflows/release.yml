@@ -81,12 +81,22 @@ jobs:
           others="$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.publish != null and .source != null) | .name')"
           [ -z "$others" ] || { echo "::error::left out of THIRD-PARTY-LICENSES by about.toml: $others"; exit 1; }
       - name: THIRD-PARTY-LICENSES
+        env:
+          # The musl Rust bundles for its musl targets; licenses/musl-COPYRIGHT is from this version.
+          MUSL_VERSION: 1.2.5
         run: |
           set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          libc="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-musl/lib/self-contained/libc.a"
+          strings -a "$libc" > "$RUNNER_TEMP/libc.strings"
+          if ! grep -qx "$MUSL_VERSION" "$RUNNER_TEMP/libc.strings"; then
+            echo "::error::Rust's bundled musl is no longer $MUSL_VERSION; update licenses/musl-COPYRIGHT and MUSL_VERSION"
+            exit 1
+          fi
           cargo about generate about.hbs -o extras/THIRD-PARTY-LICENSES
           {
             echo "================================================================================"
-            echo "musl libc 1.2.5 (MIT), statically linked into the Linux binaries"
+            echo "musl libc $MUSL_VERSION (MIT), statically linked into the Linux binaries"
             echo "--------------------------------------------------------------------------------"
             cat licenses/musl-COPYRIGHT
           } >> extras/THIRD-PARTY-LICENSES
