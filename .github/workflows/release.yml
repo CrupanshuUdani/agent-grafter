@@ -10,6 +10,7 @@ on:
       - Dockerfile
       - about.toml
       - about.hbs
+      - licenses/**
       - scripts/release-*.sh
       - scripts/check-version.sh
 
@@ -80,7 +81,15 @@ jobs:
           others="$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.publish != null and .source != null) | .name')"
           [ -z "$others" ] || { echo "::error::left out of THIRD-PARTY-LICENSES by about.toml: $others"; exit 1; }
       - name: THIRD-PARTY-LICENSES
-        run: cargo about generate about.hbs -o extras/THIRD-PARTY-LICENSES
+        run: |
+          set -euo pipefail
+          cargo about generate about.hbs -o extras/THIRD-PARTY-LICENSES
+          {
+            echo "================================================================================"
+            echo "musl libc 1.2.5 (MIT), statically linked into the Linux binaries"
+            echo "--------------------------------------------------------------------------------"
+            cat licenses/musl-COPYRIGHT
+          } >> extras/THIRD-PARTY-LICENSES
       - name: Collect files shipped in every archive
         run: cp LICENSE NOTICE README.md extras/
       - uses: actions/upload-artifact@v4
