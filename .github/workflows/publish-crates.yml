@@ -40,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          draft="$(gh release view "$TAG" --json isDraft -q .isDraft)"
+          draft="$(gh release view "$TAG" --json isDraft -q .isDraft)" || { echo "::error::no published $TAG release is visible; publish the draft first"; exit 1; }
           [ "$draft" = "false" ] || { echo "::error::the $TAG release is still a draft; publish it first"; exit 1; }
       - name: Package and verify both crates before publishing anything
         run: cargo publish --dry-run --locked -p safelink -p agent-grafter

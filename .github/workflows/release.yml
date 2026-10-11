@@ -300,8 +300,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         # A draft isn't public, so Gate B can run on the exact assets before
-        # anyone can download them.
-        run: gh release create "$TAG" --draft --verify-tag --title "agent-grafter $TAG" --notes-file notes.md dist/*
+        # anyone can download them. Drafts can share a tag, so a re-run must
+        # not add a second one.
+        run: |
+          set -euo pipefail
+          existing="$(gh release list --limit 100 --json tagName -q '.[].tagName')"
+          if grep -qxF -- "$TAG" <<<"$existing"; then
+            echo "::error::a $TAG release already exists; delete it with 'gh release delete $TAG --yes' (this keeps the tag), then re-run"
+            exit 1
+          fi
+          gh release create "$TAG" --draft --verify-tag --title "agent-grafter $TAG" --notes-file notes.md dist/*
       - name: Upload the dry run
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
