@@ -1,0 +1,21 @@
+THIRD-PARTY LICENSES
+
+agent-grafter is licensed under Apache-2.0 (see LICENSE and NOTICE).
+Release binaries also contain code from the crates below, under these licences.
+The Linux binaries also statically link musl libc, whose licence is at the end of this file.
+
+{{#each overview}}
+{{name}}: {{count}} crate(s)
+{{/each}}
+
+{{#each licenses}}
+================================================================================
+{{name}} ({{id}})
+Used by:
+{{#each used_by}}
+  - {{crate.name}} {{crate.version}}{{#if crate.repository}} <{{crate.repository}}>{{/if}}
+{{/each}}
+--------------------------------------------------------------------------------
+{{{text}}}
+
+{{/each}}
