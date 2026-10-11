@@ -299,9 +299,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        # A draft isn't public, so Gate B can run on the exact assets before
-        # anyone can download them. Drafts can share a tag, so a re-run must
-        # not add a second one.
+        # A draft isn't public, so the assets can be checked before anyone
+        # can download them. Drafts can share a tag, so a re-run must not add
+        # a second one.
         run: |
           set -euo pipefail
           existing="$(gh release list --limit 100 --json tagName -q '.[].tagName')"
