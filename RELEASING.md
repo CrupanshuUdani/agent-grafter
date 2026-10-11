@@ -20,9 +20,9 @@
    refresh `Cargo.lock` since release builds use `--locked`. Open a PR
    with these changes, wait for CI, and merge it.
 2. Run `gh workflow run release.yml` on `main` (or trigger it from the
-   Actions tab). Only a run on a `v*` tag ref publishes: the tag push, a
-   re-run of it, or a dispatch with `--ref vX.Y.Z`. A `workflow_dispatch`
-   run on `main` builds a dry run:
+   Actions tab). Only a run on a `v*` tag ref creates the draft release:
+   the tag push, a re-run of it, or a dispatch with `--ref vX.Y.Z`. A
+   `workflow_dispatch` run on `main` builds a dry run:
 
    ```sh
    gh workflow run release.yml --ref main
@@ -35,9 +35,7 @@
    Check the archives and `SHA256SUMS`. The dry run also runs
    `check-version.sh` and, once the version is bumped, previews the
    `## [X.Y.Z]` section, so `notes.md` in the artifact should show exactly
-   the notes the release will carry. For a first release, or any change
-   that could affect Windows, also run the Gate B checklist below and
-   comment its output on the merged PR from step 1.
+   the notes the release will carry.
 3. Tag the commit the dry run built, and push the tag.
 
    ```sh
@@ -46,25 +44,57 @@
    git tag -a vX.Y.Z "$sha" -m vX.Y.Z && git push origin vX.Y.Z
    ```
 
-   The tag push runs `release.yml` again, this time publishing the GitHub
-   Release.
-4. Check the release page: six archives, `SHA256SUMS`, and
-   `THIRD-PARTY-LICENSES` should all be attached.
+   The tag push runs `release.yml` again, this time creating a draft
+   GitHub Release with all the assets. A draft is not public, and
+   `releases/latest` ignores it.
+4. Run Gate B on the draft. It is required for a first release or any
+   change that could affect Windows; otherwise go straight to step 7.
+   Open an issue for it if one doesn't exist (title pattern "Gate B:
+   verify vX.Y.Z Windows binaries"). Download the draft's Windows zips:
 
-   If the tag run fails before its "Create the GitHub Release" step,
-   nothing was published. A transient failure can be re-run from the
+   ```sh
+   gh release download vX.Y.Z -p '*windows-msvc.zip' -D /tmp/gateb-vX.Y.Z
+   ```
+
+   Run the Gate B checklist below and post the full output on that issue.
+5. If Gate B fails, nothing is public yet, so delete the draft and its
+   tag, fix the cause in a PR, and start again from step 2:
+
+   ```sh
+   gh release delete vX.Y.Z --yes --cleanup-tag && git tag -d vX.Y.Z
+   ```
+
+   A tag run that fails before its "Create the GitHub Release as a draft"
+   step created nothing. A transient failure can be re-run from the
    Actions tab, since the re-run still runs on the tag. Otherwise delete
    the tag, fix the cause in a PR, and start again from step 2:
 
    ```sh
    git push --delete origin vX.Y.Z && git tag -d vX.Y.Z
    ```
+6. Once Gate B passes, open a docs PR that records the result where the
+   repo states Windows support (the standard-user row of the README
+   platform table), links the Gate B issue, and closes it with
+   `Closes #N`. Merge it. The release archives carry the README as of the
+   tagged commit, so they won't show this result; the release notes link
+   the Gate B issue instead (next step).
+7. Edit the draft's notes to add a line linking the Gate B issue (when
+   Gate B ran), either on the release page or with
+   `gh release edit vX.Y.Z --notes-file notes.md`. The flag replaces the
+   whole body, so start from the current one with
+   `gh release view vX.Y.Z --json body -q .body > notes.md`. Check the
+   page: six archives, `SHA256SUMS`, and `THIRD-PARTY-LICENSES` should all
+   be attached. Then publish the release:
 
-   Publish to crates.io only once the repository is public.
-5. Optionally publish to crates.io:
+   ```sh
+   gh release edit vX.Y.Z --draft=false
+   ```
+8. Optionally publish to crates.io, but only once the repository is
+   public. Run
    `gh workflow run publish-crates.yml -f tag=vX.Y.Z -f confirm=publish`.
    This is a separate, manual step: pushing a tag never publishes to
-   crates.io on its own. It publishes `safelink` first, then
+   crates.io on its own, and the workflow refuses to publish while the
+   GitHub Release is still a draft. It publishes `safelink` first, then
    `agent-grafter`, since `agent-grafter` depends on the published
    `safelink` version. The token is the `CARGO_REGISTRY_TOKEN` secret of
    the `crates-io` environment, which only `main` can deploy to, so
@@ -81,8 +111,8 @@ human run on a real, non-elevated Windows account, because CI's Windows
 runners run elevated and can't observe that path.
 
 On a Windows machine, signed in as a standard user (not an administrator)
-with Developer Mode off, extract the dry run's Windows zip matching the
-machine's architecture (`x86_64-pc-windows-msvc` or
+with Developer Mode off, extract the draft release's Windows zip matching
+the machine's architecture (`x86_64-pc-windows-msvc` or
 `aarch64-pc-windows-msvc`). In an empty directory, create
 `src\memory\note.md`, `src\notes.md`, an empty `dest\` directory, and this
 `agent-grafter.toml`:
@@ -110,4 +140,4 @@ Then, in order:
   `removed: notes.md`, then confirm `src\memory\note.md` and `src\notes.md`
   are still intact.
 
-Comment the full output on the merged PR from step 1.
+Post the full output on the release's Gate B issue.
