@@ -1,12 +1,12 @@
-//! Task 11: path-shape hardening.
+//! Path-shape hardening.
 //!
 //! On Windows a target path past MAX_PATH (260 chars) fails with a generic
 //! error that reads like a permissions problem -- exactly the wrong-cause
 //! red herring this project exists to remove. The other cases here (spaces,
 //! unicode, trailing separators) are portable and already exercised on every
 //! platform; the long-path tests are Windows-only by construction (POSIX has
-//! no equivalent limit) and their absence here is not evidence either way --
-//! see Global Constraint 6. Only the `windows-latest` CI job proves them,
+//! no equivalent limit). Platform-specific claims are verified only on their
+//! platform. Only the `windows-latest` CI job proves them,
 //! including the combined long-path-with-spaces-and-unicode case below,
 //! which is not implied by the two dimensions passing independently.
 
@@ -74,7 +74,6 @@ fn creates_a_link_whose_target_exceeds_max_path() {
 /// canonicalize is exactly the kind of path-processing step that could
 /// mishandle spaces or non-ASCII components even though the un-prefixed,
 /// under-260 fast path never touches it. Only Windows CI is evidence here —
-/// see Global Constraint 6.
 #[cfg(windows)]
 #[test]
 fn creates_a_link_whose_target_is_both_past_max_path_and_contains_spaces_and_unicode() {

@@ -4,13 +4,13 @@
 //! Split into [`plan`] and [`execute`] for the same reason [`crate::apply`]
 //! is, and the split is load-bearing in the same way: `--dry-run` calls
 //! [`Plan::describe`] and stops, a real run calls [`execute`], and both start
-//! from one decision path. Constraint 3's "dry-run performs the full decision
-//! logic" is therefore structural here too, not a discipline the next editor
-//! has to remember.
+//! from one decision path. Dry-run performs the full decision logic, so this
+//! property is structural here too, not a discipline the next editor has to
+//! remember.
 //!
 //! **This command never writes.** Its entire removal surface is two calls:
-//! `safelink::remove::remove_link` for anything that classifies as a link
-//! (Constraint 5 — link removal is never reimplemented here), and
+//! `safelink::remove::remove_link` for anything that classifies as a link,
+//! and
 //! `std::fs::remove_file` for a plain file that is a separate artifact from
 //! the declared source and identical to it. It creates no backup directory,
 //! never triggers the
@@ -53,8 +53,7 @@
 //! where a link was declared, a file whose bytes differ from the source, a
 //! destination that cannot be inspected, a declared path that would have to
 //! be reached through a link. "Refuse rather than guess" is the whole rule —
-//! there is no `--force`, because a destructive opt-in is not a default this
-//! task was asked to invent (Constraint 4).
+//! there is no `--force`, because a destructive opt-in is not safe to provide.
 //!
 //! **Backups are left exactly where `apply` put them, and never restored.**
 //! Not a preference — restoring is not implementable correctly. `apply`'s
@@ -467,8 +466,7 @@ fn plan_copy_entry(
 /// **This is `unlink`'s guard alone.** The same configuration is arguably
 /// never valid for `apply` or `doctor` either, and lifting it to a shared
 /// manifest-level refusal is the better long-term shape — but changing
-/// `apply`'s refusals is a scope change this task was explicitly not
-/// authorised to make. See the task report.
+/// `apply`'s refusals is a separate change, so it is not made here.
 fn dest_root_inside_source(source_root: &Path, dest_root: &Path) -> Option<String> {
     let canonical_dest = match std::fs::canonicalize(dest_root) {
         Ok(path) => path,
@@ -833,8 +831,8 @@ fn decide_over_real_data(dest: &Path, source: Option<&Path>) -> Decision {
     };
 
     if meta.is_dir() {
-        // The brief's own example of the refusal that must never become a
-        // deletion: an unrelated real directory where a link was declared.
+        // The refusal that must never become a deletion: an unrelated real
+        // directory where a link was declared.
         // Removing it would mean recursing into a tree this tool did not
         // create, which is the one thing it will not do.
         return Decision::Refused(format!(
@@ -874,10 +872,10 @@ fn decide_over_real_data(dest: &Path, source: Option<&Path>) -> Decision {
     if has_identical_bytes(source, dest) {
         Decision::RemoveCopy
     } else {
-        // Constraint 4: this could delete the only copy of an edit the user
-        // made. Refused, not backed-up-and-deleted — the latter would make
-        // `unlink` a command that writes, and would silently discard an edit
-        // into a directory the user then has to know to look in.
+        // This could delete the only copy of an edit the user made. Refused,
+        // not backed-up-and-deleted — the latter would make `unlink` a command
+        // that writes, and would silently discard an edit into a directory the
+        // user then has to know to look in.
         Decision::Refused(format!(
             "the file at {} does not match the declared source {} byte for \
              byte — it was edited after it was materialized, or the source \
@@ -958,9 +956,8 @@ pub fn execute(plan: &Plan) -> Report {
 /// The two removal calls in this function are the only two in the module, and
 /// each is the narrowest primitive that can do its job:
 /// `safelink::remove::remove_link`, which refuses anything that is not a link
-/// and never traverses one (Constraint 5 — this layer never reimplements
-/// that), and `std::fs::remove_file`, which cannot remove a directory and
-/// cannot recurse. There is no third.
+/// and never traverses one, and `std::fs::remove_file`, which cannot remove
+/// a directory and cannot recurse. There is no third.
 fn remove_one(removal: &PlannedRemoval) -> io::Result<Option<String>> {
     let class = match classify(&removal.dest) {
         Ok(class) => class,
@@ -980,7 +977,7 @@ fn remove_one(removal: &PlannedRemoval) -> io::Result<Option<String>> {
     // TOCTOU needs handle-based traversal (`openat` and friends), which is
     // not something this project has anywhere. `apply`'s write path has the
     // same open window, and the consistent fix belongs there too; it is out
-    // of this task's scope. Narrowing it here anyway, because the cost is one
+    // of scope for `unlink`. Narrowing it here anyway, because the cost is one
     // call to a function that already exists and this is the path that
     // *deletes*.
     let Ok(rel) = removal.dest.strip_prefix(&removal.dest_root) else {

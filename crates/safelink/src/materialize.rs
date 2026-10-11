@@ -200,7 +200,7 @@ fn writable_ancestor_supports_links(dest: &Path, probe: &dyn SymlinkProbe) -> bo
 /// writing somewhere else) is exactly the kind of guess this engine does not
 /// make. The only thing worth improving is the diagnostic — the raw OS error
 /// on Linux is the bare string "Permission denied (os error 13)", which does
-/// not say *which* path, and a manifest run touches many. Task 10's
+/// not say *which* path, and a manifest run touches many. The
 /// missing-source error already names its path; this makes the destination
 /// side consistent with it.
 ///
@@ -229,8 +229,8 @@ fn annotate_dest_error(dest: &Path, e: io::Error) -> io::Error {
 /// **indistinguishable from a genuine ACL or ownership failure**, so
 /// `annotate_dest_error` would confidently advise fixing permissions that are
 /// already correct. That is precisely the admin-rights red herring this
-/// project exists to remove (Task 11 eliminated the same class of misleading
-/// error for long paths), so it must not be reintroduced here.
+/// project exists to remove (the long-path error no longer misleads in the
+/// same way), so it must not be reintroduced here.
 ///
 /// Deliberately NOT a downgrade. `DirectoryLink` has no copy fallback by
 /// design — substituting a recursive directory copy would turn one link into
@@ -465,7 +465,7 @@ mod tests {
     /// error and silently substitute a copy, and every other test in this
     /// module would still pass — none of them make `create_dir_link` fail.
     /// That silent substitution is precisely the "the engine never guesses"
-    /// guarantee this whole plan is built on. Verified by sabotage:
+    /// guarantee this whole engine is built on. Verified by sabotage:
     /// swallowing the error and returning `Ok(DirectoryLink)` anyway is
     /// caught here — `Got: Ok(DirectoryLink)` — and stays uncaught by every
     /// other test in the module.

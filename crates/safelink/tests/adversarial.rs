@@ -1,4 +1,4 @@
-//! Task 12: the adversarial input matrix.
+//! Adversarial input matrix: hostile filesystem scenarios.
 //!
 //! Every case below is a way a real filesystem can hand the engine something
 //! hostile, and the project's entire claim is that it never destroys a source
@@ -8,20 +8,19 @@
 //!
 //! Several rows overlap with work already done elsewhere in this crate. Where
 //! they do, this file deliberately duplicates the assertion rather than
-//! deleting or merging it -- the plan's stated reason is defense-in-depth: if
+//! deleting or merging it. The reason is defense-in-depth: if
 //! a future refactor breaks the guarantee, two independent tests should fail,
 //! not one. Each such row carries a doc comment naming the existing test it
 //! deliberately overlaps with and why it is re-asserted here.
 //!
-//! PLATFORM HONESTY (Global Constraint 6): the self-referential-link,
-//! own-parent-link, and dangling-link tests are `#[cfg(unix)]`-only. Creating a self-referential
+//! PLATFORM HONESTY: the self-referential-link, own-parent-link, and
+//! dangling-link tests are `#[cfg(unix)]`-only. Creating a self-referential
 //! junction on Windows is a separate exercise, and gating only the setup line
 //! would leave the assertions running against a path that does not exist, so
 //! the test would fail on Windows for the wrong reason. The cross-volume test
 //! is `#[cfg(windows)]`-only (POSIX symlinks already allow cross-filesystem
-//! linking trivially and this was never in question there). Neither can be
-//! exercised for real on this Linux machine -- only the `windows-latest` CI
-//! job is evidence for them.
+//! linking trivially). Neither can be exercised for real on this Linux machine
+//! — only the `windows-latest` CI job is evidence for them.
 
 use safelink::capability::ForcedProbe;
 use safelink::classify::{LinkClass, classify};
@@ -50,12 +49,11 @@ use std::os::unix::fs::PermissionsExt;
 /// either way.
 ///
 /// PLATFORM NOTE: this test is `#[cfg(unix)]`-only. Windows does not allow
-/// creating a junction to a non-existent target -- `junction::create` fails
-/// with "Access is denied" (code 5) when the target doesn't exist. On Windows,
-/// the dangling-link case is therefore not testable via this mechanism; the
-/// POSIX path covers the property. This matches Global Constraint 6: the
-/// project states which platforms a claim covers rather than letting a green
-/// check imply all of them.
+/// creating a junction to a non-existent target — `junction::create` fails
+/// with "Access is denied" when the target doesn't exist. On Windows, the
+/// dangling-link case is therefore not testable via this mechanism; the
+/// POSIX path covers the property. We explicitly state which platforms a
+/// claim covers rather than letting a green check imply all of them.
 #[cfg(unix)]
 #[test]
 fn a_dangling_link_is_classified_and_removed_without_erroring_on_its_target() {
@@ -192,8 +190,8 @@ fn a_link_pointing_at_its_own_parent_is_classified_without_recursing() {
 
 // ---------------------------------------------------------------------------
 // Row 5. remove_link on a real directory.
-// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_directory`
-// (Task 5). Re-asserted here as a regression guard: if a future refactor
+// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_directory`.
+// Re-asserted here as a regression guard: if a future refactor
 // breaks this guarantee, two independent tests should fail, not one.
 // ---------------------------------------------------------------------------
 
@@ -211,8 +209,8 @@ fn refuses_to_remove_a_real_directory() {
 
 // ---------------------------------------------------------------------------
 // Row 6. remove_link on a real file.
-// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_file`
-// (Task 5). Same defense-in-depth reasoning as row 5.
+// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_file`.
+// Same defense-in-depth reasoning as row 5.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -272,7 +270,7 @@ fn refuses_when_destination_is_a_real_file_and_dir_link_is_requested() {
 
 // ---------------------------------------------------------------------------
 // Row 8. Destination's parent does not exist.
-// DELIBERATE OVERLAP with `dest_failure.rs` (Task 10b), which already covers
+// DELIBERATE OVERLAP with `dest_failure.rs`, which already covers
 // missing-parent-hierarchy via `directory_link_refuses_a_missing_parent_when_creation_is_disabled`
 // and `file_copy_refuses_a_missing_parent_when_creation_is_disabled`. Re-asserted
 // here as a regression guard and to confirm the guarantee holds for the
@@ -318,7 +316,7 @@ fn refuses_when_destinations_parent_does_not_exist() {
 
 // ---------------------------------------------------------------------------
 // Row 9. Destination is read-only.
-// DELIBERATE OVERLAP with `dest_failure.rs` (Task 10b), which already covers
+// DELIBERATE OVERLAP with `dest_failure.rs`, which already covers
 // permission-denied via `directory_link_refuses_an_unwritable_parent_and_names_the_destination`
 // and `file_copy_refuses_an_unwritable_parent_and_names_the_destination`.
 // Re-asserted here as a regression guard and to confirm the OS error is
@@ -374,7 +372,7 @@ fn surfaces_the_os_error_unchanged_when_destination_is_read_only() {
 /// Junctions on Windows allow cross-volume linking, unlike POSIX symlinks
 /// which already do trivially. Both same-volume and cross-volume targets must
 /// succeed. This test is `#[cfg(windows)]`-only and cannot execute on this
-/// Linux machine -- see Global Constraint 6.
+/// Linux machine — platform-specific claims are tested only on their platform.
 #[cfg(windows)]
 #[test]
 fn creates_links_for_both_same_volume_and_cross_volume_targets() {
@@ -394,7 +392,7 @@ fn creates_links_for_both_same_volume_and_cross_volume_targets() {
 
     // Cross-volume target: use the system temp directory's volume as a
     // different mount point if one is available, otherwise document that
-    // this specific sub-case is deferred to manual Gate B verification.
+    // this specific sub-case is left to a manual run on a real Windows machine.
     // The CI runner typically exposes multiple drive letters; try to find
     // one that is not the same as our tempdir's drive.
     let cross_volume = if let Some(other_vol) = find_other_volume(d.path()) {
@@ -516,8 +514,8 @@ fn two_concurrent_materialize_calls_never_leave_a_partial_destination() {
 
 // ---------------------------------------------------------------------------
 // Row 12. Atomic copy interrupted.
-// DELIBERATE OVERLAP with `copy::tests::destination_is_never_observed_partially_written`
-// (Task 7), which already proves the temp-file-plus-rename property via a
+// DELIBERATE OVERLAP with `copy::tests::destination_is_never_observed_partially_written`,
+// which already proves the temp-file-plus-rename property via a
 // watcher thread. Re-asserted here as a regression guard and to confirm the
 // guarantee holds through the full materialize() path, not just the
 // lower-level copy_atomic() primitive.

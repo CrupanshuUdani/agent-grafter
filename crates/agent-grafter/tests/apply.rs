@@ -37,8 +37,8 @@ struct Env {
 
 impl Env {
     /// Create the sandbox with both `source/` and `dest/` already existing.
-    /// `dest/` exists because Ruling 8 refuses a target root that does not —
-    /// the test that exercises that refusal removes it explicitly.
+    /// `dest/` exists because the tool refuses a target root that doesn't exist —
+    /// one test explicitly removes it to exercise that refusal.
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
         fs::create_dir(dir.path().join("source")).expect("create source dir");
@@ -160,8 +160,8 @@ fn stdout_of(output: &Output) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 1. The plan's own test, adapted per Ruling 9: a real target root and a real
-//    source file behind the declared entry.
+// 1. The basic case: a real target root and a real source file behind
+//    the declared entry.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -331,10 +331,9 @@ fn a_link_entry_produces_a_traversable_directory_link() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. The tricky one (Ruling 4 + Ruling 6): a declared `FileSymlink` that the
-//    engine downgrades to a copy leaves an ordinary file at `dest`, which
-//    `classify()` cannot tell apart from "never materialized". The second run
-//    must still report `same`.
+// 6. The tricky one: a declared `FileSymlink` that is downgraded to a copy
+//    leaves an ordinary file at `dest`, which `classify()` cannot distinguish
+//    from "never materialized". A second run must still report `same`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -399,8 +398,8 @@ fn only_a_file_link_that_became_a_copy_carries_the_copy_notice() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Ruling 10: a refusal is per-entry, not a whole-run abort, and it sets the
-//    run's exit code to 4.
+// 7. A refusal is per-entry, not a whole-run abort, and it sets the run's
+//    exit code to 4.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -450,8 +449,8 @@ fn an_occupied_directory_destination_is_refused_without_stopping_other_entries()
 }
 
 // ---------------------------------------------------------------------------
-// 8. Ruling 8: a target root that does not exist is refused outright, rather
-//    than silently built from a typo.
+// 8. A target root that does not exist is refused outright, rather than
+//    silently built from a typo.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -484,8 +483,8 @@ fn a_target_root_that_does_not_exist_is_refused_without_creating_anything() {
 }
 
 // ---------------------------------------------------------------------------
-// 9. Ruling 9's second half: `source` resolves relative to the manifest file,
-//    not the process's working directory.
+// 9. The `source` path resolves relative to the manifest file, not the
+//    process's working directory.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -516,7 +515,7 @@ fn source_resolves_relative_to_the_manifest_not_the_working_directory() {
 }
 
 // ---------------------------------------------------------------------------
-// Dry-run honesty (Constraint 3 / Ruling 3): the same plan drives both modes.
+// Dry-run honesty: the same plan drives both dry-run and real modes.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -597,8 +596,8 @@ fn two_entries_claiming_one_destination_are_refused_before_anything_is_written()
         "nothing was written, so no backup should have been taken either"
     );
 
-    // A refusal is still per-entry (Ruling 10): the uncontested sibling from
-    // the same declared directory was processed normally.
+    // A refusal is per-entry: the uncontested sibling from the same
+    // declared directory is processed normally.
     assert_eq!(
         fs::read(env.dest().join("modes/two.md")).unwrap(),
         b"uncontested",
@@ -666,11 +665,11 @@ fn a_missing_source_is_refused_per_entry() {
 }
 
 // ===========================================================================
-// Prune (Task S3b). A file that used to be in the source, was materialized to
-// the destination, and has since been deleted from the source, is removed from
+// Prune: A file that used to be in the source, was materialized to the
+// destination, and has since been deleted from the source, is removed from
 // the destination — and *nothing else is*.
 //
-// The first two tests below are the load-bearing ones. The plan's own wording
+// The first two tests below are the load-bearing ones. The obvious wording
 // for this feature ("destination entries absent from the manifest and from the
 // source are removed") would, read literally against a real target root like
 // an agent's config directory, authorize deleting a user's credentials,
@@ -1025,8 +1024,8 @@ fn an_empty_source_directory_still_prunes_what_it_no_longer_holds() {
 }
 
 // ===========================================================================
-// Required test 10 (Ruling F): retention and this run's own backup-writing, in
-// one single `apply` invocation.
+// Retention and this run's own backup-writing, in one single `apply`
+// invocation.
 // ===========================================================================
 
 #[test]
@@ -1633,7 +1632,7 @@ fn a_declared_entry_naming_the_backup_directory_is_refused_not_written() {
 }
 
 // ===========================================================================
-// Task 2: the backup *root* itself (`target.dest/.agrafter-backups`) was
+// The backup *root* itself (`target.dest/.agrafter-backups`) was
 // never classified before `apply` read from it (retention) or wrote into it
 // (`backup_path`) -- only the entries *inside* it were. A linked backup root
 // therefore let both the retention sweep and a backed-up write escape
@@ -1677,8 +1676,8 @@ fn a_linked_backup_root_is_never_read_or_deleted_through_for_retention() {
     }
 
     // The backup root is a directory link, pointing at that real directory --
-    // not declared anywhere in the manifest (S3c already closed that path);
-    // it becomes one some other way, which is exactly this task's premise.
+    // not declared anywhere in the manifest (that path is already refused);
+    // it becomes one some other way, which is exactly what this test covers.
     safelink::create::create_dir_link(&elsewhere, &env.dest().join(".agrafter-backups")).unwrap();
 
     let before: Vec<PathBuf> = fs::read_dir(&elsewhere)
@@ -1722,10 +1721,9 @@ fn a_linked_backup_root_is_never_read_or_deleted_through_for_retention() {
 fn a_linked_backup_root_refuses_writes_that_would_need_a_backup() {
     // The write-side twin: `backup_path` never classified `.agrafter-backups`
     // itself, only the entry's own destination, so a symlinked backup root let
-    // a replaced file's backup be filed through it -- outside `target.dest`.
-    // Constraint 4 treats "write without the backup it would normally get" as
-    // exactly as forbidden as the unsafe write itself, so the entry must be
-    // refused rather than silently written with no backup.
+    // a replaced file's backup be filed through it — outside `target.dest`.
+    // A write without the backup it would normally get is forbidden, so the
+    // entry must be refused rather than silently written with no backup.
     let env = Env::new();
     env.write_source("file.md", b"new content");
     let manifest = env.write_manifest("copy = [\"file.md\"]");
@@ -1770,10 +1768,9 @@ fn a_linked_backup_root_refuses_writes_that_would_need_a_backup() {
 
 #[test]
 fn an_entry_needing_no_backup_is_unaffected_by_a_linked_backup_root() {
-    // The other half of Constraint 4's requirement: only entries that would
-    // actually have gone through `backup_path` are refused. A destination
-    // with nothing real at it yet needs no backup either way, so a linked
-    // backup root must not stop it from being written.
+    // Only entries that would actually have gone through `backup_path` are
+    // refused. A destination with nothing real at it yet needs no backup
+    // either way, so a linked backup root must not stop it from being written.
     let env = Env::new();
     env.write_source("file.md", b"new content");
     let manifest = env.write_manifest("copy = [\"file.md\"]");

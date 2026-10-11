@@ -125,21 +125,20 @@ mod tests {
 
     #[test]
     fn real_probe_is_callable_and_does_not_panic() {
-        // Deliberately does not assert the value: it is environment-dependent
-        // and, per Global Constraint 7, CI reports `true` because the runner
-        // is elevated. Asserting either way here would encode a falsehood.
+        // Deliberately does not assert the value: it is environment-dependent.
+        // CI runners have elevated privileges, so they report `true`.
+        // Asserting either way here would encode a falsehood.
         let tmp = tempfile::tempdir().unwrap();
         let _ = RealProbe.can_create_file_symlink(&tmp.path().join("dest"));
     }
 
     /// On a **symlink-capable** filesystem the answer is knowable, so assert it.
     ///
-    /// Scoped to the filesystem, not to POSIX. The previous version of this
-    /// test asserted `true` for all of POSIX on the grounds that "POSIX file
-    /// symlinks need no privilege" -- true of POSIX *filesystems*, false of
-    /// POSIX *hosts*: an exFAT volume mounted on Linux is a POSIX host whose
-    /// filesystem refuses symlinks outright (EPERM). That assumption is the
-    /// Task 13 bug, so this test must not restate it.
+    /// Scoped to the filesystem, not to POSIX. A previous version asserted
+    /// `true` for all of POSIX assuming "POSIX file symlinks need no privilege"
+    /// — true of POSIX *filesystems*, but false of POSIX *hosts*. An exFAT
+    /// volume mounted on Linux is a POSIX host whose filesystem refuses symlinks
+    /// outright (EPERM). This test corrects that assumption.
     ///
     /// Without this, a `RealProbe` that ignores the filesystem and returns a
     /// hardcoded `false` passes the whole module. Verified by sabotage: it did.
@@ -167,8 +166,8 @@ mod tests {
     }
 
     /// A destination whose parent does not exist yet must not be reported as
-    /// symlink-incapable -- that is a missing directory, not a filesystem
-    /// limitation. Task 10b may create the parent moments later.
+    /// symlink-incapable — that is a missing directory, not a filesystem
+    /// limitation. The parent may be created later.
     #[cfg(unix)]
     #[test]
     fn real_probe_walks_up_to_the_nearest_existing_directory() {

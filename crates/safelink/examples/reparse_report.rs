@@ -1,10 +1,10 @@
-//! Spike S1 diagnostic: how does a reparse point on a mounted NTFS volume
-//! present to Linux, and what does `classify()` say about it?
+//! Diagnostic: how does a reparse point on a mounted NTFS volume present
+//! to Linux, and what does `classify()` say about it?
 //!
-//! Global Constraint 8 forbids using a Linux-side `is_dir()` as proof that a
-//! path is an ordinary directory, on the grounds that `ntfs-3g` presents
-//! junctions as symlinks and `ntfs3` has no documented contract. This example
-//! is the tool that verified that claim against real Windows junctions.
+//! A Linux-side `is_dir()` check is not safe proof that a path is an ordinary
+//! directory: `ntfs-3g` presents junctions as symlinks and `ntfs3` has no
+//! documented contract. This example is the tool that verifies that claim
+//! against real Windows junctions.
 //!
 //! STRICTLY READ-ONLY: calls `classify()` and stdlib metadata only. It never
 //! calls `remove_link()` and never writes. Safe to point at a live Windows
@@ -19,7 +19,7 @@
 //!       /mnt/win/Users            # a real directory, as a control
 //!
 //! Read the output as: a junction that reports `is_dir() == true` is exactly
-//! the footgun Constraint 8 exists to forbid.
+//! the safety problem this tool exists to prevent.
 
 use safelink::classify::classify;
 

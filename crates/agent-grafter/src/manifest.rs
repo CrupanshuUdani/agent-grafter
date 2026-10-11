@@ -21,9 +21,9 @@ use serde::Deserialize;
 pub struct Manifest {
     /// Where the declared entries live, relative to the manifest file.
     pub source: PathBuf,
-    /// Entries materialized as plain copies (real behavior: Task S3).
+    /// Entries materialized as plain copies.
     pub copy: Vec<String>,
-    /// Entries materialized as links (real behavior: Task S3).
+    /// Entries materialized as links.
     pub link: Vec<String>,
     /// Named destinations `copy`/`link` entries are materialized into.
     pub targets: HashMap<String, Target>,

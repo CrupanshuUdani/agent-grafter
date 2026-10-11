@@ -1,17 +1,16 @@
 //! Argument parsing, subcommand dispatch, and exit codes.
 //!
-//! `apply` really materializes (Task S3a) and reconciles (Task S3b): it
-//! computes a plan via `crate::apply::plan` — writes, prunes and the backup
-//! retention sweep, all decided together — and, unless `--dry-run` was passed,
-//! executes it. Prune and retention need no wiring of their own here: they
-//! live in the same `Plan`, so both modes get them by construction rather than
-//! by a second code path remembering to ask. `status` does read-only drift
-//! checking against `link` entries only. `doctor` is also read-only, but wider:
-//! it checks every declared `copy` and `link` entry (by reusing
-//! `crate::apply::plan`, the same decision `apply` itself would reach),
-//! link-target drift `is_same()` cannot see, and each target's backup-root
-//! health — see `crate::doctor` for the full breakdown. `unlink` really
-//! removes (Task S8), using the same plan/execute split `apply` does and the
+//! `apply` materializes and reconciles: it computes a plan via
+//! `crate::apply::plan` — writes, prunes and the backup retention sweep, all
+//! decided together — and, unless `--dry-run` was passed, executes it. Prune
+//! and retention need no wiring of their own here: they live in the same `Plan`,
+//! so both modes get them by construction rather than by a second code path
+//! remembering to ask. `status` does read-only drift checking against `link`
+//! entries only. `doctor` is also read-only, but wider: it checks every declared
+//! `copy` and `link` entry (by reusing `crate::apply::plan`, the same decision
+//! `apply` itself would reach), link-target drift `is_same()` cannot see, and
+//! each target's backup-root health — see `crate::doctor` for the full breakdown.
+//! `unlink` removes links, using the same plan/execute split `apply` does and the
 //! same exit-code mapping: it removes links via `safelink` and plain files
 //! that still match their declared source, and refuses everything else — see
 //! `crate::unlink` for what it will and will not touch, and for why it never
@@ -27,8 +26,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use crate::apply::Decision;
 use crate::manifest::{self, Manifest};
 
-/// The exit codes this CLI promises to scripts and hooks. See the task
-/// brief's table — these values are load-bearing, not incidental.
+/// The exit codes this CLI promises to scripts and hooks. These values are
+/// load-bearing, not incidental.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCode {
     /// Success, or `status` found everything in sync.
@@ -165,9 +164,9 @@ pub fn run() -> ExitCode {
 /// `apply` (`--dry-run` or not): compute the full plan, then either print it
 /// or carry it out.
 ///
-/// Both modes run the identical decision logic in `crate::apply::plan`
-/// (Constraint 3): `--dry-run` describes the plan and stops, a real run
-/// additionally executes it — backing up anything it is about to overwrite.
+/// Both modes run the identical decision logic in `crate::apply::plan`.
+/// `--dry-run` describes the plan and stops, a real run additionally executes
+/// it — backing up anything it is about to overwrite.
 /// Because the exit code is derived from the plan and not from what happened
 /// during execution, `--dry-run` reports the same code a real run would, so a
 /// CI gate on exit 4 behaves the same either way.
@@ -205,10 +204,9 @@ fn apply(args: &ApplyArgs) -> ExitCode {
 /// `unlink` (`--dry-run` or not): compute the full removal plan, then either
 /// print it or carry it out.
 ///
-/// Wired exactly like `apply` above, and for the same reason (Constraint 3):
-/// both modes run the identical decision logic in `crate::unlink::plan`, so
-/// `--dry-run` reports the same exit code a real run would and a CI gate on
-/// exit 4 behaves the same either way.
+/// Wired exactly like `apply` above: both modes run the identical decision
+/// logic in `crate::unlink::plan`, so `--dry-run` reports the same exit code a
+/// real run would and a CI gate on exit 4 behaves the same either way.
 ///
 /// The exit-code mapping is `apply`'s, minus code 3: `unlink` is not a drift
 /// checker, so it never reports a finding — 2 for an unreadable or

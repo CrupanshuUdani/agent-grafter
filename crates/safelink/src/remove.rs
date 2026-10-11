@@ -11,7 +11,7 @@ use crate::classify::{LinkClass, classify};
 ///
 /// This function must never call `std::fs::remove_dir_all`. It delegates to
 /// `remove_dir_link`, whose per-platform primitive unlinks the link object
-/// itself without descending into the target. See Global Constraints 3 and 9.
+/// itself without descending into the target.
 pub fn remove_link(path: &Path) -> io::Result<()> {
     match classify(path)? {
         LinkClass::NotALink => Err(io::Error::new(
@@ -35,8 +35,7 @@ pub fn remove_link(path: &Path) -> io::Result<()> {
 /// POSIX: a directory symlink is *not* a directory. `remove_dir` fails with
 /// `ENOTDIR` — the symlink must be unlinked with `remove_file`. Writing one
 /// portable `remove_dir` call here compiles fine and fails only at runtime,
-/// on POSIX only. (Verified empirically: it was the one bug this plan's code
-/// had when first executed.)
+/// on POSIX only.
 ///
 /// Neither arm may ever use `remove_dir_all`.
 #[cfg(windows)]

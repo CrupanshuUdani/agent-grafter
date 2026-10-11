@@ -9,11 +9,11 @@
 //! drift and backup-root health among them.
 //!
 //! Checks 3 and 4 below are laid out as separate, individually named
-//! functions rather than folded into one big loop, on purpose: a later task
-//! (Windows-only elevation and Developer Mode reporting) hooks into this
+//! functions rather than folded into one big loop, on purpose: the
+//! Windows-only elevation and Developer Mode reporting hooks into this
 //! module by adding another such function and calling it from [`diagnose`],
 //! not by re-reading this file's control flow to find a place to splice in.
-//! That task is [`report_windows_environment`] below: its formatting logic
+//! That is [`report_windows_environment`] below: its formatting logic
 //! is cross-platform and unit-tested here via [`crate::winenv::ForcedWindowsFacts`],
 //! but [`diagnose`] only ever calls it inside a `#[cfg(windows)]` block with
 //! the real [`crate::winenv::RealWindowsFacts`] -- on every other platform
@@ -22,11 +22,10 @@
 //!
 //! **Check 3 is built on [`crate::apply::plan`], not a second, parallel
 //! drift-checker.** A `doctor` that disagreed with what `apply --dry-run`
-//! would do is the exact honesty failure Constraint 3 exists to prevent for
-//! `apply` itself; building `doctor` on the same `plan()` output makes that
-//! disagreement structurally impossible rather than a discipline to
-//! remember. `doctor` never calls [`crate::apply::execute`] — only
-//! `describe()`-shaped reporting over the plan `plan()` already computed.
+//! would do would be dishonest; building on the same `plan()` output makes
+//! that disagreement structurally impossible. `doctor` never calls
+//! [`crate::apply::execute`] — only `describe()`-shaped reporting over the
+//! plan `plan()` already computed.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -145,9 +144,9 @@ fn report_tools() -> String {
 ///
 /// `PruneDecision::LeftInPlace` is drift only when its own destination is
 /// *not* itself a link: a link sitting where a prune candidate was expected
-/// is a distinct, deliberate outcome `apply` refuses to touch (Ruling D),
-/// and reporting that as something to fix would be wrong. But that is not
-/// `LeftInPlace`'s only producer any more (Task S4-2): a plain stale file
+/// is a deliberate non-action `apply` refuses to touch, and reporting that as
+/// something to fix would be wrong. But that is not `LeftInPlace`'s only
+/// producer: a plain stale file
 /// that `apply` left in place because it could not safely back it up before
 /// removing it — currently, only because the target's own backup root is a
 /// link (see Check 5) — genuinely is drift, with the same remedy Check 5
@@ -160,9 +159,9 @@ fn report_tools() -> String {
 /// `plan.notes` are printed too, and printed first, matching
 /// [`crate::apply::Plan::describe`]'s own ordering: a note is what the
 /// planner *could not determine* (an unreadable prune subtree, a skipped
-/// retention sweep), and Constraint 3's honesty requirement covers what a
-/// run could not decide just as much as what it decided. A note never
-/// changes the exit code, the same as it never changes `apply`'s.
+/// retention sweep). Honesty requires reporting what a run could not decide
+/// just as much as what it decided. A note never changes the exit code, the
+/// same as it never changes `apply`'s.
 fn report_plan_drift(plan: &Plan) -> (Vec<String>, bool) {
     let mut lines = Vec::new();
     let mut drifted = false;
@@ -214,13 +213,11 @@ fn report_plan_drift(plan: &Plan) -> (Vec<String>, bool) {
                 ));
             }
             PruneDecision::LeftInPlace(reason) => {
-                // A link sitting where a prune candidate was expected (Ruling
-                // D) is deliberate, not drift — `prune.dest` itself classifies
-                // as a link. Anything else left in place is drift: a stale
-                // file the source no longer has that could not be safely
-                // removed, currently only because the target's own backup
-                // root is a link (Task S4-2; see Check 5's own finding on the
-                // same root). `reason` already carries the specific remedy.
+                // A link sitting where a prune candidate was expected is
+                // deliberate, not drift — `prune.dest` itself classifies as a
+                // link. Anything else left in place is drift: a stale file the
+                // source no longer has that could not be safely removed. `reason`
+                // already carries the specific remedy.
                 if !matches!(
                     classify(&prune.dest),
                     Ok(LinkClass::DirLink | LinkClass::FileLink)
@@ -246,8 +243,7 @@ fn report_plan_drift(plan: &Plan) -> (Vec<String>, bool) {
 /// alone reports a link left over from a previous manifest edit — one that
 /// now points at a source no longer declared — as `same`. Closing it here,
 /// not in `is_same()`: this is a **doctor-only diagnostic**, deliberately
-/// not wired into `apply`'s decision logic (which just went through several
-/// review rounds of its own for Task S3c). `apply` continues to treat such
+/// not wired into `apply`'s decision logic. `apply` continues to treat such
 /// a link as `Same` and will not touch it — so the fix this reports is
 /// "remove the link, then re-run `apply`", never "re-run apply" alone,
 /// which would do nothing: `apply` would see the same stale link and leave
@@ -276,9 +272,9 @@ fn report_plan_drift(plan: &Plan) -> (Vec<String>, bool) {
 /// before the structural reparse-tag query ever runs — but the exact
 /// resulting `LinkClass` was not independently pinned by a Windows-side
 /// unit assertion (this dev environment cannot run one), so it is
-/// documented here as the probable cause, not asserted as fact the way
-/// Constraint 8 requires; asserting an unverified specific enum value here
-/// would repeat the exact mistake this correction exists to fix. What is
+/// documented here as the probable cause, not asserted as unverified fact;
+/// doing so would repeat the exact mistake this correction exists to fix.
+/// What is
 /// pinned by a real, already-passing assertion on every platform this runs
 /// on: `is_same()` returns `false` for a from-the-start-dangling directory
 /// link (this module's own test
@@ -311,12 +307,11 @@ fn report_link_targets(plan: &Plan) -> (Vec<String>, bool, bool) {
             Err(_) => {
                 // Resolves through the link to what it actually points at.
                 // Failing here (as opposed to failing to canonicalize the
-                // *source* below) means the link itself is dangling: its
-                // target no longer exists. Reported distinctly from "wrong
-                // target" below, per the task brief — the fix reads the
-                // same, but the finding is a different fact about the
-                // filesystem and conflating them would obscure which one a
-                // user is looking at.
+                // *source* below) means the link itself is dangling: its target
+                // no longer exists. Reported distinctly from "wrong target"
+                // because the fix is the same but the finding is a different fact
+                // about the filesystem, and conflating them would obscure which
+                // one a user is looking at.
                 drifted = true;
                 lines.push(with_target(
                     &planned.target,
@@ -375,11 +370,11 @@ fn report_link_targets(plan: &Plan) -> (Vec<String>, bool, bool) {
 /// directory, never a link.
 ///
 /// A linked backup directory is a genuinely dangerous finding, the same
-/// severity class as the write-scope-escape bugs already fixed in `apply`
-/// (S3b/S3c): backups written during a future `apply` run could then land
-/// somewhere other than this target, or a restore could read from
-/// somewhere else entirely. Task 2 of this plan closes the write/delete
-/// side of this in `apply` itself; this check is only the diagnostic.
+/// severity class as the write-scope-escape bugs already fixed in `apply`:
+/// backups written during a future `apply` run could then land somewhere
+/// other than this target, or a restore could read from somewhere else
+/// entirely. `apply` itself closes the write/delete side of this; this check
+/// is only the diagnostic.
 ///
 /// Deduplicated by the resolved backup path, the same way
 /// `crate::apply::plan_target_retention` dedupes its own sweep: two
@@ -535,8 +530,8 @@ mod tests {
         assert!(neither[1].contains("developer mode: off"));
 
         // Every combination's wording says explicitly that this is not a
-        // pass/fail verdict -- the whole point of the brief's requirement
-        // that a user not read "not elevated" as something to fix.
+        // pass/fail verdict — users should not read "not elevated" as a
+        // problem to fix.
         for combo in [
             (Some(true), Some(false)),
             (Some(false), Some(true)),
@@ -556,11 +551,10 @@ mod tests {
         }
     }
 
-    /// The honesty case the advisor caught in review: a query that did not
-    /// complete must never be printed as the observed fact "not elevated" /
-    /// "off" -- that would be reporting an assumption as a fact, which
-    /// AGENTS.md's Boundaries forbid outright. `None` gets its own distinct
-    /// wording instead, and it must still read as report-only.
+    /// The honesty case: a query that did not complete must never be printed
+    /// as the observed fact "not elevated" / "off", because that would report
+    /// an assumption as a fact. `None` gets its own distinct wording instead,
+    /// and it must still read as report-only.
     #[test]
     fn report_windows_environment_never_reports_unknown_as_a_definite_fact() {
         use crate::winenv::ForcedWindowsFacts;
@@ -592,9 +586,8 @@ mod tests {
     }
 
     /// The empirical probe `report_link_targets`'s comparison logic is built
-    /// on, run before trusting any assumption about what `canonicalize`
-    /// does to a directory link (Constraint 8: "the last three Windows CI
-    /// rounds" happened from guessing this instead of testing it).
+    /// on, run before trusting any assumption about what `canonicalize` does
+    /// to a directory link. Platform behavior should be tested, not guessed.
     ///
     /// Confirms the round-trip while the link is healthy, then confirms —
     /// on POSIX, with a real assertion, not just prose — what happens once
@@ -612,9 +605,9 @@ mod tests {
     /// Windows machine or CI run to verify, not this Linux dev environment;
     /// the Windows-side regression coverage for this behavior lives in
     /// `tests/doctor.rs`'s `reports_a_dangling_link_as_drift`, at the
-    /// integration level, asserting what CI actually showed rather than
-    /// what seemed like it should be true (Constraint 8's whole point — an
-    /// earlier version of this pair of comments got exactly this wrong).
+    /// integration level, asserting what CI actually showed rather than what
+    /// seemed like it should be true. Earlier versions of these comments made
+    /// assumptions that proved wrong.
     #[test]
     fn canonicalize_round_trips_through_a_directory_link_and_fails_once_the_target_is_gone() {
         let tmp = tempfile::tempdir().unwrap();
@@ -629,8 +622,8 @@ mod tests {
             "canonicalize must resolve a healthy directory link to its target"
         );
 
-        // `remove_dir` (not `remove_dir_all`, forbidden everywhere per
-        // Constraint 6): `target` is the empty directory created above.
+        // Use `remove_dir` (not `remove_dir_all`): `target` is the empty
+        // directory created above, so the narrow operation is safe.
         std::fs::remove_dir(&target).unwrap();
 
         assert!(

@@ -4,7 +4,7 @@ name: Docker musl build
 # and verifies a fully static Linux binary in Docker, an independent concern
 # from the native cargo build/test/lint/deny jobs in ci.yml, and keeping it
 # in its own file avoids any risk of colliding with concurrent edits to
-# ci.yml from other CI-hardening work in this same plan.
+# ci.yml.
 
 on:
   push:
@@ -57,8 +57,8 @@ jobs:
       # "assert the assumption actually held" convention already in ci.yml
       # (the Windows elevation check, the "safety suite actually ran" check):
       # fail the build loudly if the binary is not what it claims to be,
-      # rather than letting Task 6 discover a dynamically-linked binary
-      # later.
+      # rather than letting the smoke test discover a dynamically-linked
+      # binary later.
       #
       # `file`/`readelf` report this as "static-pie linked" (a PIE binary
       # that is nonetheless fully self-contained), not the older plain
@@ -87,12 +87,12 @@ jobs:
           fi
           echo "Confirmed: no PT_INTERP, no DT_NEEDED -- agent-grafter is genuinely statically linked."
 
-      # Named artifact Task 6 (multi-distro smoke test) downloads by this
-      # exact name via actions/download-artifact@v4, then runs
-      # dist/agent-grafter directly (no further extraction step). Note for
-      # Task 6's implementer: upload-artifact zips the contents; always
-      # `chmod +x dist/agent-grafter` after download before invoking it, in
-      # case the executable bit did not survive the round trip.
+      # The multi-distro smoke test downloads this artifact by its exact
+      # name via actions/download-artifact@v4, then runs dist/agent-grafter
+      # directly (no further extraction step). upload-artifact zips the
+      # contents, so `chmod +x dist/agent-grafter` after download before
+      # invoking it, in case the executable bit did not survive the round
+      # trip.
       - name: Upload static binary artifact
         uses: actions/upload-artifact@v4
         with:
@@ -100,7 +100,7 @@ jobs:
           path: dist/agent-grafter
           if-no-files-found: error
 
-  # Task 6 (multi-distro smoke test): "genuinely static" per readelf is not
+  # Multi-distro smoke test: "genuinely static" per readelf is not
   # the same claim as "actually runs everywhere" -- this job is the real
   # end-to-end proof, not a restatement of the previous job's linkage check.
   multi-distro-smoke-test:
@@ -113,7 +113,7 @@ jobs:
         distro: [debian, alpine, fedora]
     steps:
       # Download the exact artifact musl-static-build uploaded, rather than
-      # rebuilding -- this proves the binary Task 5's job actually shipped
+      # rebuilding -- this proves the binary the build job actually shipped
       # runs, not a fresh build that happens to also come out static.
       - name: Download static binary artifact
         uses: actions/download-artifact@v4
@@ -122,9 +122,8 @@ jobs:
           path: dist
 
       # upload-artifact's zip transport is not guaranteed to preserve the
-      # executable bit across the round trip (flagged but left unverified
-      # by the previous job's own upload step) -- always reassert +x here
-      # rather than assuming it survived.
+      # executable bit across the round trip, and the upload step does not
+      # check it -- always reassert +x here rather than assuming it survived.
       - name: Restore executable bit
         run: chmod +x dist/agent-grafter
 
@@ -148,8 +147,8 @@ jobs:
       # container's own filesystem before being invoked, rather than
       # executed in place from the bind mount: this repo's dev environment
       # has hit an NTFS/ntfs3 mount that breaks mmap-exec for statically
-      # linked binaries (see Task 5's report), and copying to a normal
-      # filesystem first is the same workaround Task 5 used locally.
+      # linked binaries, and copying to a normal filesystem first is the
+      # same workaround used locally.
       # GitHub-hosted runners don't have that problem, but doing it this
       # way is free and removes the question entirely.
       # `apply` is deliberately included, not just the read-only commands.

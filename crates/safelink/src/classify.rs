@@ -26,7 +26,7 @@ pub fn classify(path: &Path) -> io::Result<LinkClass> {
     let path = &normalize_for_classification(path);
     // Order matters. Check the junction first: a junction's mode bits are
     // not a reliable discriminator, so `is_symlink()` must never be the
-    // first question asked on Windows. See Global Constraint 5.
+    // first question asked on Windows.
     //
     // `junction::exists` does NOT return `Ok(false)` for an ordinary file or
     // directory — it returns `Err` from the underlying FSCTL_GET_REPARSE_POINT
@@ -36,9 +36,9 @@ pub fn classify(path: &Path) -> io::Result<LinkClass> {
     // query on an existing-but-plain object surfaces as this specific error
     // code instead. Blindly propagating it with `?` made `classify` return
     // `Err` for every plain file and directory on Windows — caught only when
-    // this code first ran on a real Windows kernel in CI, exactly the gap
-    // Global Constraint 6 warns about. Only this one error code means
-    // "not a junction, keep looking"; anything else (permission denied, path
+    // this code first ran on a real Windows kernel in CI, a platform difference.
+    // Only this one error code means "not a junction, keep looking"; anything
+    // else (permission denied, path
     // too long, etc.) is a genuine failure and must still propagate.
     const ERROR_NOT_A_REPARSE_POINT: i32 = 4390;
     match junction::exists(path) {
@@ -72,7 +72,7 @@ pub fn classify(path: &Path) -> io::Result<LinkClass> {
     //
     // Found by the `windows-latest` CI job, not locally: on POSIX
     // `remove_file` unlinks a dangling symlink of either kind, so the whole
-    // divergence is invisible on Linux. Global Constraint 6, again.
+    // divergence is invisible on Linux — a platform difference.
     const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
     if md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
         return Ok(LinkClass::DirLink);
@@ -90,9 +90,9 @@ pub fn classify(path: &Path) -> io::Result<LinkClass> {
 #[cfg(unix)]
 pub fn classify(path: &Path) -> io::Result<LinkClass> {
     // A trailing separator makes POSIX `lstat` dereference a directory
-    // symlink and report the target, not the link -- normalize before the
+    // symlink and report the target, not the link — normalize before the
     // OS ever sees it rather than document this as a caller obligation.
-    // See Task 11 and `paths::normalize_for_classification`.
+    // See `paths::normalize_for_classification`.
     let path = &normalize_for_classification(path);
     let md = std::fs::symlink_metadata(path)?;
     if !md.file_type().is_symlink() {
