@@ -226,8 +226,7 @@ fn a_materialized_link_entry_is_removed_and_its_source_survives() {
 
 #[test]
 fn an_unrelated_real_directory_where_a_link_was_declared_is_refused() {
-    // The brief's own example of the refusal that must never become a
-    // deletion. `apply` refuses to materialize over this directory too, so
+    // The refusal that must never become a deletion. `apply` refuses to materialize over this directory too, so
     // the fixture is built without it.
     let env = Env::new();
     env.write_source("memory/note.md", b"remembered");
@@ -628,7 +627,7 @@ fn a_copy_entry_whose_source_is_gone_is_refused_not_guessed_at() {
 // destroying the only copy of the content, before the identity guard existed.
 // ---------------------------------------------------------------------------
 
-/// **SAFETY TEST — regression, fix round 1.**
+/// **SAFETY TEST — regression.**
 ///
 /// A target whose `dest` *is* the source root. Every declared entry then
 /// resolves to its own source, and the content comparison says "identical"
@@ -658,7 +657,7 @@ fn a_target_whose_dest_is_the_source_root_is_refused_not_removed() {
     run.assert_exit(4);
 }
 
-/// **SAFETY TEST — regression, fix round 1.**
+/// **SAFETY TEST — regression.**
 ///
 /// A declared source entry that is a link *into* the destination. The source
 /// side then resolves to the very file at the destination, so the content

@@ -466,8 +466,7 @@ fn plan_copy_entry(
 /// **This is `unlink`'s guard alone.** The same configuration is arguably
 /// never valid for `apply` or `doctor` either, and lifting it to a shared
 /// manifest-level refusal is the better long-term shape — but changing
-/// `apply`'s refusals is a scope change this task was explicitly not
-/// authorised to make. See the task report.
+/// `apply`'s refusals is a separate change, so it is not made here.
 fn dest_root_inside_source(source_root: &Path, dest_root: &Path) -> Option<String> {
     let canonical_dest = match std::fs::canonicalize(dest_root) {
         Ok(path) => path,
@@ -832,8 +831,8 @@ fn decide_over_real_data(dest: &Path, source: Option<&Path>) -> Decision {
     };
 
     if meta.is_dir() {
-        // The brief's own example of the refusal that must never become a
-        // deletion: an unrelated real directory where a link was declared.
+        // The refusal that must never become a deletion: an unrelated real
+        // directory where a link was declared.
         // Removing it would mean recursing into a tree this tool did not
         // create, which is the one thing it will not do.
         return Decision::Refused(format!(
@@ -978,7 +977,7 @@ fn remove_one(removal: &PlannedRemoval) -> io::Result<Option<String>> {
     // TOCTOU needs handle-based traversal (`openat` and friends), which is
     // not something this project has anywhere. `apply`'s write path has the
     // same open window, and the consistent fix belongs there too; it is out
-    // of this task's scope. Narrowing it here anyway, because the cost is one
+    // of scope for `unlink`. Narrowing it here anyway, because the cost is one
     // call to a function that already exists and this is the path that
     // *deletes*.
     let Ok(rel) = removal.dest.strip_prefix(&removal.dest_root) else {

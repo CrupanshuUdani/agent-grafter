@@ -3,13 +3,13 @@
 # stage that CI extracts via `docker buildx build --output`, without ever
 # needing a runnable image.
 #
-# CI usage (Task 5, S5 CI pipeline hardening):
+# CI usage:
 #
 #   docker buildx build --target export --output type=local,dest=dist .
 #
 # This writes the binary to `dist/agent-grafter` in the build context on the
 # runner's filesystem -- no `docker create` / `docker cp` container dance
-# needed. Task 6 (multi-distro smoke test) consumes `dist/agent-grafter`.
+# needed. The multi-distro smoke test consumes `dist/agent-grafter`.
 
 FROM rust:1-alpine AS builder
 

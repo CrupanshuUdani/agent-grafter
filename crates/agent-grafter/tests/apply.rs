@@ -160,7 +160,7 @@ fn stdout_of(output: &Output) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 1. The plan's own test: a real target root and a real source file behind
+// 1. The basic case: a real target root and a real source file behind
 //    the declared entry.
 // ---------------------------------------------------------------------------
 
@@ -669,7 +669,7 @@ fn a_missing_source_is_refused_per_entry() {
 // destination, and has since been deleted from the source, is removed from
 // the destination — and *nothing else is*.
 //
-// The first two tests below are the load-bearing ones. The plan's own wording
+// The first two tests below are the load-bearing ones. The obvious wording
 // for this feature ("destination entries absent from the manifest and from the
 // source are removed") would, read literally against a real target root like
 // an agent's config directory, authorize deleting a user's credentials,
@@ -1632,7 +1632,7 @@ fn a_declared_entry_naming_the_backup_directory_is_refused_not_written() {
 }
 
 // ===========================================================================
-// Task 2: the backup *root* itself (`target.dest/.agrafter-backups`) was
+// The backup *root* itself (`target.dest/.agrafter-backups`) was
 // never classified before `apply` read from it (retention) or wrote into it
 // (`backup_path`) -- only the entries *inside* it were. A linked backup root
 // therefore let both the retention sweep and a backed-up write escape
@@ -1676,8 +1676,8 @@ fn a_linked_backup_root_is_never_read_or_deleted_through_for_retention() {
     }
 
     // The backup root is a directory link, pointing at that real directory --
-    // not declared anywhere in the manifest (S3c already closed that path);
-    // it becomes one some other way, which is exactly this task's premise.
+    // not declared anywhere in the manifest (that path is already refused);
+    // it becomes one some other way, which is exactly what this test covers.
     safelink::create::create_dir_link(&elsewhere, &env.dest().join(".agrafter-backups")).unwrap();
 
     let before: Vec<PathBuf> = fs::read_dir(&elsewhere)

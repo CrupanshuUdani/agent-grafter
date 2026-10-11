@@ -871,7 +871,7 @@ fn resolve_scoped_dest(
     // the `PathBuf` itself is never misinterpreted by anything that walks it
     // by component. Rebuilding purely from `names`, one real `.push()` per
     // component, is this project's established fix for that class of bug
-    // (see the two Windows-only path-display fixes already merged for S3b).
+    // (see the earlier Windows-only path-display fixes).
     let joined = |names: &[&std::ffi::OsStr]| {
         let mut path = ctx.dest.to_path_buf();
         for name in names {
@@ -938,9 +938,8 @@ fn resolve_scoped_dest(
 /// The reason is that a `DirectoryLink`'s destination *is* its source. Reading
 /// through it sees the source's live contents; there is no independently
 /// materialized copy to reconcile against anything, so there is nothing that
-/// could meaningfully be stale. An implementer who "helpfully" walked a link
-/// entry's destination looking for files "not declared anywhere" and removed
-/// them would be deleting *through the link, into the source of truth* — a
+/// could meaningfully be stale. Walking a link entry's destination looking for
+/// files "not declared anywhere" and removing them would be deleting *through the link, into the source of truth* — a
 /// critical safety failure. Never delete through a link. Do not add pruning here.
 fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
     let source = ctx.source_root.join(name);
@@ -966,7 +965,7 @@ fn plan_link_entry(ctx: &TargetContext<'_>, name: &str) -> PlannedEntry {
 ///
 /// A declared directory holding no files expands to no entries, and therefore
 /// reports nothing: there is no work to report, and inventing a fifth report
-/// verb for "nothing was in there" is not this task's to define.
+/// verb for "nothing was in there" is out of scope here.
 /// A `copy` entry naming a **file** contributes no prune candidates: a single
 /// file either exists or it does not, and there is no subtree to reconcile.
 /// Only the directory branch below reaches [`plan_prunes`].
@@ -1073,7 +1072,7 @@ fn plan_copy_entry(
 /// whole tool lives, so it is worth stating what that property is and why the
 /// structure — not a convention — guarantees it.
 ///
-/// The plan's own wording for prune ("destination entries absent from the
+/// The obvious wording for prune ("destination entries absent from the
 /// manifest and from the source are removed"), read literally against a real
 /// target root like an agent's config directory, would authorize enumerating
 /// that entire directory and deleting everything the manifest does not
@@ -1710,7 +1709,7 @@ pub(crate) fn has_identical_bytes(source: &Path, dest: &Path) -> bool {
 /// asked to back up, and `plan_retention` only classifies the entries a
 /// `read_dir` of the backup root turns up (`retention.rs:109`), never the
 /// root of that `read_dir` call. If the backup root is itself a link — not
-/// through a manifest-declared entry (S3c's `resolve_scoped_dest` already
+/// through a manifest-declared entry (`resolve_scoped_dest` already
 /// refuses that), but by prior tampering, a leftover from an older version,
 /// or anything else — a backed-up write, a backed-up prune, and the
 /// retention sweep would all otherwise resolve through it: a backup can land

@@ -14,8 +14,8 @@
 //! `agent-grafter` depends on `safelink` for actual link removal, so this
 //! crate's `src/` should never need to call `remove_dir_all` directly at
 //! all — this test exists as a structural backstop against that changing
-//! silently (as it once did, in a test file, before a human/AI reviewer
-//! caught it by hand).
+//! silently (as it once did, in a test file, before a review caught it by
+//! hand).
 //!
 //! Each crate's test binary gets its own `CARGO_MANIFEST_DIR` at compile
 //! time, so this is a near-duplicate of `safelink`'s test rather than a
@@ -70,7 +70,7 @@ fn removal_sources_never_reference_remove_dir_all() {
 
     assert!(
         offenders.is_empty(),
-        "Global Constraint 3 violated — `{FORBIDDEN}` appears in executable code.\n\
+        "`{FORBIDDEN}` appears in executable code.\n\
          It deletes through a link on Windows and would destroy the user's \
          source of truth.\n\
          Use remove_dir (Windows dir link) or remove_file (POSIX dir link, \

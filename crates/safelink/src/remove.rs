@@ -35,8 +35,7 @@ pub fn remove_link(path: &Path) -> io::Result<()> {
 /// POSIX: a directory symlink is *not* a directory. `remove_dir` fails with
 /// `ENOTDIR` — the symlink must be unlinked with `remove_file`. Writing one
 /// portable `remove_dir` call here compiles fine and fails only at runtime,
-/// on POSIX only. (Verified empirically: it was the one bug this plan's code
-/// had when first executed.)
+/// on POSIX only.
 ///
 /// Neither arm may ever use `remove_dir_all`.
 #[cfg(windows)]

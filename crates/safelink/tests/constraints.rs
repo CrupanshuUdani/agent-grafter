@@ -53,7 +53,7 @@ fn removal_sources_never_reference_remove_dir_all() {
 
     assert!(
         offenders.is_empty(),
-        "Global Constraint 3 violated — `{FORBIDDEN}` appears in executable code.\n\
+        "`{FORBIDDEN}` appears in executable code.\n\
          It deletes through a link on Windows and would destroy the user's \
          source of truth.\n\
          Use remove_dir (Windows dir link) or remove_file (POSIX dir link, \

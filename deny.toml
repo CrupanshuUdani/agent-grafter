@@ -48,8 +48,8 @@ confidence-threshold = 0.8
 # https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
 #
 # Default RustSec advisory database (https://github.com/rustsec/advisory-db),
-# no dependency currently triggers an advisory (see task-3-report.md for the
-# real `cargo deny check advisories` output this was verified against).
+# no dependency currently triggers an advisory (`cargo deny check advisories`
+# passes).
 # Deliberately no `ignore` entries: if a future dependency does trigger a
 # RustSec advisory, it must be looked at and either bumped or explicitly
 # ignored with a stated reason -- not silently muted here in advance.

@@ -2,12 +2,12 @@
 //! destination has two failure modes of its own, and they need opposite
 //! treatments.
 //!
-//! Before this task the two op kinds disagreed about the first one, by
-//! accident rather than by design: `copy_atomic` has always called
+//! The two op kinds used to disagree about the first one, by accident
+//! rather than by design: `copy_atomic` has always called
 //! `create_dir_all` on the destination's parent, so `FileCopy` silently
 //! built whole missing hierarchies, while `create_dir_link` never did, so
 //! `DirectoryLink` failed outright on the exact same manifest shape. Nothing
-//! in the code or the plan said which was correct.
+//! in the code said which was correct.
 //!
 //! The rows, one or more tests each:
 //!
@@ -82,9 +82,9 @@ fn source_file(tmp: &Path) -> std::path::PathBuf {
 // Rows 1 and 2: default options auto-create the hierarchy, identically.
 // ---------------------------------------------------------------------------
 
-/// Row 1. The behavior that **changed**: before this task `create_dir_link`
-/// was handed a destination whose parent did not exist and failed with a raw
-/// `NotFound`. Under the default it now matches `FileCopy`.
+/// Row 1. The behavior that **changed**: `create_dir_link` used to be handed a
+/// destination whose parent did not exist and fail with a raw `NotFound`.
+/// Under the default it now matches `FileCopy`.
 ///
 /// The parent is nested two levels deep on purpose. A one-level parent would
 /// pass against a `create_dir` implementation as well as a `create_dir_all`
@@ -203,8 +203,8 @@ fn directory_link_refuses_a_missing_parent_when_creation_is_disabled() {
 }
 
 /// Row 4. The behavior that **changed** on this side: `copy_atomic` ignores
-/// the flag entirely — it has no access to it — so before this task a
-/// `FileCopy` built the hierarchy no matter what the caller asked for.
+/// the flag entirely — it has no access to it — so a `FileCopy` used to build
+/// the hierarchy no matter what the caller asked for.
 /// Passing now requires the policy to sit in `materialize`, ahead of the
 /// call, rather than inside `copy_atomic`.
 #[test]
@@ -337,7 +337,7 @@ fn deny_writes(path: &Path) -> Option<RestoreMode> {
 ///
 /// The raw Linux error is the bare string "Permission denied (os error 13)" —
 /// it does not say which path. A manifest run touches many destinations, so
-/// an unnamed error tells the user nothing actionable. Task 10's
+/// an unnamed error tells the user nothing actionable. The
 /// missing-source error already names its path; this is the same contract on
 /// the destination side.
 #[cfg(unix)]
@@ -450,8 +450,8 @@ fn the_permission_error_preserves_the_underlying_os_error() {
     );
 }
 
-/// Row 7. The destination-untouched guarantee, mirroring Task 10's
-/// discipline and `materialize.rs`'s
+/// Row 7. The destination-untouched guarantee, mirroring the missing-source
+/// tests and `materialize.rs`'s
 /// `directory_link_failure_propagates_as_an_error_not_a_silent_downgrade`.
 ///
 /// Real, irreplaceable content sits at the destination; the parent is then

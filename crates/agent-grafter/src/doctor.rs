@@ -9,11 +9,11 @@
 //! drift and backup-root health among them.
 //!
 //! Checks 3 and 4 below are laid out as separate, individually named
-//! functions rather than folded into one big loop, on purpose: a later task
-//! (Windows-only elevation and Developer Mode reporting) hooks into this
+//! functions rather than folded into one big loop, on purpose: the
+//! Windows-only elevation and Developer Mode reporting hooks into this
 //! module by adding another such function and calling it from [`diagnose`],
 //! not by re-reading this file's control flow to find a place to splice in.
-//! That task is [`report_windows_environment`] below: its formatting logic
+//! That is [`report_windows_environment`] below: its formatting logic
 //! is cross-platform and unit-tested here via [`crate::winenv::ForcedWindowsFacts`],
 //! but [`diagnose`] only ever calls it inside a `#[cfg(windows)]` block with
 //! the real [`crate::winenv::RealWindowsFacts`] -- on every other platform
@@ -370,11 +370,11 @@ fn report_link_targets(plan: &Plan) -> (Vec<String>, bool, bool) {
 /// directory, never a link.
 ///
 /// A linked backup directory is a genuinely dangerous finding, the same
-/// severity class as the write-scope-escape bugs already fixed in `apply`
-/// (S3b/S3c): backups written during a future `apply` run could then land
-/// somewhere other than this target, or a restore could read from
-/// somewhere else entirely. Task 2 of this plan closes the write/delete
-/// side of this in `apply` itself; this check is only the diagnostic.
+/// severity class as the write-scope-escape bugs already fixed in `apply`:
+/// backups written during a future `apply` run could then land somewhere
+/// other than this target, or a restore could read from somewhere else
+/// entirely. `apply` itself closes the write/delete side of this; this check
+/// is only the diagnostic.
 ///
 /// Deduplicated by the resolved backup path, the same way
 /// `crate::apply::plan_target_retention` dedupes its own sweep: two
@@ -551,11 +551,10 @@ mod tests {
         }
     }
 
-    /// The honesty case the advisor caught in review: a query that did not
-    /// complete must never be printed as the observed fact "not elevated" /
-    /// "off" -- that would be reporting an assumption as a fact, which
-    /// AGENTS.md's Boundaries forbid outright. `None` gets its own distinct
-    /// wording instead, and it must still read as report-only.
+    /// The honesty case: a query that did not complete must never be printed
+    /// as the observed fact "not elevated" / "off", because that would report
+    /// an assumption as a fact. `None` gets its own distinct wording instead,
+    /// and it must still read as report-only.
     #[test]
     fn report_windows_environment_never_reports_unknown_as_a_definite_fact() {
         use crate::winenv::ForcedWindowsFacts;

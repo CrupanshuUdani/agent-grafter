@@ -12,7 +12,7 @@ fn windows_link_semantics_are_not_validated_on_this_platform() {
          SKIPPED: Windows junction semantics are NOT exercised on this host.\n\
          A green run here is NOT evidence the Windows path works.\n\
          Only the `windows-latest` CI job is evidence for Windows claims,\n\
-         and even it runs elevated (see Global Constraint 7).\n\
+         and even it runs elevated.\n\
          ======================================================================\n"
     );
 }

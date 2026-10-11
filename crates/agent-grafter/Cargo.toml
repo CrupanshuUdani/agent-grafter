@@ -46,7 +46,7 @@ clap_mangen = "0.3.3"
 # at this same 0.61 line, so promoting it to a direct dependency here adds
 # no new crate to the dependency graph. MIT OR Apache-2.0 (verified against
 # its own Cargo.toml, matching this workspace's Apache-2.0 license.workspace
-# decision) -- see winenv.rs and this task's report for what was checked.
+# decision) -- see winenv.rs.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

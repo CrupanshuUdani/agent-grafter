@@ -12,9 +12,9 @@ categories = ["filesystem", "os::windows-apis", "os::unix-apis"]
 publish = ["crates-io"]
 
 [dependencies]
-# Runtime dep, not dev-only: `RealProbe` (Task 6) uses it outside #[cfg(test)].
+# Runtime dep, not dev-only: `RealProbe` uses it outside #[cfg(test)].
 # A regular dependency is visible to unit AND integration tests, so there is
-# no separate [dev-dependencies] entry and no manifest edit later in the plan.
+# no separate [dev-dependencies] entry.
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]

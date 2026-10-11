@@ -1,4 +1,4 @@
-//! Task 13: symlink support is a property of the **filesystem at the
+//! Symlink support is a property of the **filesystem at the
 //! destination**, not of the process, the platform, or `/tmp`.
 //!
 //! The bug this file exists to prevent: `RealProbe` used to probe
@@ -100,7 +100,7 @@ fn the_probe_api_takes_a_destination_path() {
 }
 
 /// A not-yet-created parent is a missing directory, not a filesystem
-/// limitation -- Task 10b may create it moments later, so answering `false`
+/// limitation -- the parent may be created moments later, so answering `false`
 /// would wrongly downgrade every `FileSymlink` whose parent does not exist yet.
 #[cfg(unix)]
 #[test]
@@ -124,7 +124,7 @@ fn a_missing_parent_does_not_read_as_a_symlink_incapable_filesystem() {
 // The rows that need a link-less filesystem.
 // ---------------------------------------------------------------------------
 
-/// The core of Task 13. The probe must answer about the destination, and the
+/// The core of this file. The probe must answer about the destination, and the
 /// old `/tmp` behaviour must not creep back.
 ///
 /// Sabotage target: make `RealProbe` ignore its `near` argument and probe

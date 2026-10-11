@@ -33,9 +33,8 @@
 /// itself did not complete (a token query or registry read failed for a
 /// reason other than "the value is absent, which means off"). Collapsing
 /// that into a bare `false` would print a *fact* ("developer mode: off")
-/// that was never actually observed -- exactly what AGENTS.md's Boundaries
-/// forbid ("do not turn assumptions into facts"), and the same honesty
-/// standard `report_backup_roots`'s own `could not inspect {path}: {e}`
+/// that was never actually observed: an assumption reported as a fact, and
+/// the same honesty standard `report_backup_roots`'s own `could not inspect {path}: {e}`
 /// line and `report_plan_drift`'s `plan.notes` already hold check 3 and
 /// check 5 to. `doctor::report_windows_environment` renders `None` as its
 /// own third line, not as either boolean state.

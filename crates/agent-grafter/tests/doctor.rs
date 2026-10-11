@@ -229,7 +229,7 @@ fn reports_a_dangling_link_as_drift() {
 // A link with the wrong target: the on-disk link points at a real, still-
 // existing directory that is not the one currently declared. This is the
 // actual `is_same()` gap, and is reachable identically on every platform —
-// this is also the test that asserts on remedy text (brief check 7).
+// this is also the test that asserts on remedy text.
 // ---------------------------------------------------------------------------
 
 #[test]

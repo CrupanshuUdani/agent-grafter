@@ -8,7 +8,7 @@
 //!
 //! Several rows overlap with work already done elsewhere in this crate. Where
 //! they do, this file deliberately duplicates the assertion rather than
-//! deleting or merging it -- the plan's stated reason is defense-in-depth: if
+//! deleting or merging it. The reason is defense-in-depth: if
 //! a future refactor breaks the guarantee, two independent tests should fail,
 //! not one. Each such row carries a doc comment naming the existing test it
 //! deliberately overlaps with and why it is re-asserted here.
@@ -190,8 +190,8 @@ fn a_link_pointing_at_its_own_parent_is_classified_without_recursing() {
 
 // ---------------------------------------------------------------------------
 // Row 5. remove_link on a real directory.
-// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_directory`
-// (Task 5). Re-asserted here as a regression guard: if a future refactor
+// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_directory`.
+// Re-asserted here as a regression guard: if a future refactor
 // breaks this guarantee, two independent tests should fail, not one.
 // ---------------------------------------------------------------------------
 
@@ -209,8 +209,8 @@ fn refuses_to_remove_a_real_directory() {
 
 // ---------------------------------------------------------------------------
 // Row 6. remove_link on a real file.
-// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_file`
-// (Task 5). Same defense-in-depth reasoning as row 5.
+// DELIBERATE OVERLAP with `remove::tests::refuses_to_remove_a_plain_file`.
+// Same defense-in-depth reasoning as row 5.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -270,7 +270,7 @@ fn refuses_when_destination_is_a_real_file_and_dir_link_is_requested() {
 
 // ---------------------------------------------------------------------------
 // Row 8. Destination's parent does not exist.
-// DELIBERATE OVERLAP with `dest_failure.rs` (Task 10b), which already covers
+// DELIBERATE OVERLAP with `dest_failure.rs`, which already covers
 // missing-parent-hierarchy via `directory_link_refuses_a_missing_parent_when_creation_is_disabled`
 // and `file_copy_refuses_a_missing_parent_when_creation_is_disabled`. Re-asserted
 // here as a regression guard and to confirm the guarantee holds for the
@@ -316,7 +316,7 @@ fn refuses_when_destinations_parent_does_not_exist() {
 
 // ---------------------------------------------------------------------------
 // Row 9. Destination is read-only.
-// DELIBERATE OVERLAP with `dest_failure.rs` (Task 10b), which already covers
+// DELIBERATE OVERLAP with `dest_failure.rs`, which already covers
 // permission-denied via `directory_link_refuses_an_unwritable_parent_and_names_the_destination`
 // and `file_copy_refuses_an_unwritable_parent_and_names_the_destination`.
 // Re-asserted here as a regression guard and to confirm the OS error is
@@ -514,8 +514,8 @@ fn two_concurrent_materialize_calls_never_leave_a_partial_destination() {
 
 // ---------------------------------------------------------------------------
 // Row 12. Atomic copy interrupted.
-// DELIBERATE OVERLAP with `copy::tests::destination_is_never_observed_partially_written`
-// (Task 7), which already proves the temp-file-plus-rename property via a
+// DELIBERATE OVERLAP with `copy::tests::destination_is_never_observed_partially_written`,
+// which already proves the temp-file-plus-rename property via a
 // watcher thread. Re-asserted here as a regression guard and to confirm the
 // guarantee holds through the full materialize() path, not just the
 // lower-level copy_atomic() primitive.

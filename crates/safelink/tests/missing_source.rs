@@ -1,9 +1,9 @@
-//! Task 10: the canonical source lives on a removable or shared volume, so
+//! The canonical source lives on a removable or shared volume, so
 //! "source path does not exist" is the single most likely real-world state,
 //! not an exotic edge case.
 //!
 //! A missing source can never justify mutating the destination. The four
-//! rows of the plan's table, one test each:
+//! cases below get one test each:
 //!
 //!   1. source missing, dest absent      -> refuse, name the path, create nothing
 //!   2. source missing, dest is a link   -> refuse, leave the stale link alone
@@ -12,7 +12,7 @@
 //!
 //! Every assertion here uses `symlink_metadata`, never `exists()`:
 //! `exists()` follows the link, so it reports `false` for a *dangling* link
-//! and `true` only by accident. Against the exact failure this task prevents
+//! and `true` only by accident. Against the exact failure these tests prevent
 //! — creating a dangling link — an `exists()` assertion is vacuous.
 
 use safelink::capability::ForcedProbe;
@@ -92,7 +92,7 @@ fn leaves_an_existing_real_directory_untouched_when_the_source_is_missing() {
     );
 }
 
-/// Row 2, the stale-link case — the one this task's sabotage check targets.
+/// Row 2, the stale-link case — the one the sabotage check below targets.
 ///
 /// An unmounted volume makes an otherwise perfect link dangle. Removing it
 /// destroys a working configuration for no benefit: the volume may come back.

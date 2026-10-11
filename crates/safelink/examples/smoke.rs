@@ -34,7 +34,7 @@ fn main() -> std::io::Result<()> {
     println!("symlink capability at the destination: {}", {
         use safelink::capability::SymlinkProbe;
         // Asked about the destination specifically -- on exFAT/FAT32 this is
-        // `false` even though /tmp would say `true`. See Task 13.
+        // `false` even though /tmp would say `true`.
         RealProbe.can_create_file_symlink(&entry.dest)
     });
 

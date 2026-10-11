@@ -20,13 +20,11 @@ jobs:
 
       # This project's entire Windows CI strategy rests on the documented
       # fact that GitHub's windows-latest runners run elevated with UAC
-      # disabled (Engine Plan Global Constraint 7 / this plan's Global
-      # Constraint 5/6). Every doc comment claiming "CI cannot validate
-      # standard-user behavior" is only true because CI is elevated — if
-      # GitHub ever changes that default, this project's Windows coverage
-      # story silently inverts (CI starts testing the standard-user path
-      # and never the elevated one) and nothing today would notice. Fail
-      # loudly instead of letting that happen quietly.
+      # disabled. Every doc comment claiming "CI cannot validate
+      # standard-user behavior" is only true because CI is elevated. If
+      # GitHub ever changes that default, the Windows coverage silently
+      # inverts (CI starts testing the standard-user path and never the
+      # elevated one) and nothing today would notice. Fail loudly instead.
       - name: Assert the Windows runner is running elevated
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -36,7 +34,7 @@ jobs:
           $principal = New-Object Security.Principal.WindowsPrincipal($identity)
           $isElevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
           if (-not $isElevated) {
-            Write-Host "::error::GitHub's windows-latest runner is documented to run elevated with UAC disabled; this run did not. This project's entire Windows CI strategy (Engine Plan Global Constraint 7) assumes elevation -- every doc comment claiming 'CI exercises the elevated path only, not standard-user behavior' depends on that assumption. If this has genuinely changed, every one of those doc comments needs re-auditing before this check can simply be updated to match the new reality."
+            Write-Host "::error::GitHub's windows-latest runner is documented to run elevated with UAC disabled; this run did not. This project's Windows CI strategy assumes elevation, and every doc comment claiming 'CI exercises the elevated path only, not standard-user behavior' depends on that. If this has genuinely changed, every one of those doc comments needs re-auditing before this check can simply be updated to match the new reality."
             exit 1
           }
           Write-Host "Confirmed: runner is elevated, as this project's Windows CI strategy assumes."
@@ -77,7 +75,7 @@ jobs:
       - name: Test
         run: cargo test --all-targets --verbose -- --nocapture
 
-      # Enforces Global Constraint 6. #[cfg(windows)] tests do not FAIL on
+      # #[cfg(windows)] tests do not FAIL on
       # other hosts, they are absent -- so assert the flagship test was really
       # executed here rather than silently compiled out or deleted. Runs
       # inside the matrix job; a second windows runner would prove nothing
@@ -127,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Pinned to the exact version determined and verified locally (see
-      # README.md's Requirements section and this task's report): the
+      # README.md's Requirements section): the
       # edition-2024 floor alone is 1.85.0, but this codebase's if-let
       # chains (e.g. crates/agent-grafter/src/manifest.rs) require the
       # let-chains feature stabilized in 1.88.0. `@stable` would not catch

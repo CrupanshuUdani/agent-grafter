@@ -12,6 +12,5 @@ repository = "https://github.com/CrupanshuUdani/agent-grafter"
 # stabilized in 1.88.0): `cargo +1.87.0 check --workspace --all-targets`
 # fails with E0658 on those chains; `cargo +1.88.0 check --workspace
 # --all-targets` and `cargo +1.88.0 test --workspace` both pass. See
-# README.md's Requirements section and this task's report for the exact
-# commands and output.
+# README.md's Requirements section.
 rust-version = "1.88"
