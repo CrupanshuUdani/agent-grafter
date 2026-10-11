@@ -18,6 +18,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: crates-io
     env:
       TAG: ${{ inputs.tag }}
       CONFIRM: ${{ inputs.confirm }}

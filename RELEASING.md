@@ -66,12 +66,13 @@
    This is a separate, manual step: pushing a tag never publishes to
    crates.io on its own. It publishes `safelink` first, then
    `agent-grafter`, since `agent-grafter` depends on the published
-   `safelink` version. It needs the `CARGO_REGISTRY_TOKEN` repository
-   secret to be set, with the `publish-new` scope for the first publish of
-   each crate and `publish-update` after that. The workflow packages and
-   verifies both crates before publishing either, and if `agent-grafter`
-   fails after `safelink` is published, re-running the workflow skips
-   `safelink` and resumes.
+   `safelink` version. The token is the `CARGO_REGISTRY_TOKEN` secret of
+   the `crates-io` environment, which only `main` can deploy to, so
+   dispatch the workflow on `main`. The token needs the `publish-new`
+   scope for the first publish of each crate and `publish-update` after
+   that. The workflow packages and verifies both crates before publishing
+   either, and if `agent-grafter` fails after `safelink` is published,
+   re-running the workflow skips `safelink` and resumes.
 
 ## Gate B: Windows standard-user check
 
