@@ -91,6 +91,19 @@ g commit -q -am "tidy" -m "Claude-Session: https://example.invalid/x"
 hygiene && fail "an attribution trailer was not flagged"
 g reset -q --hard HEAD~1
 
+g commit -q --allow-empty -m "tidy" -m "Co-Authored-By: Codex <noreply@openai.invalid>"
+hygiene && fail "a Codex co-author trailer was not flagged"
+g reset -q --hard HEAD~1
+
+g commit -q --allow-empty -m "tidy" -m "Generated with Cursor"
+hygiene && fail "a 'Generated with' line naming another agent was not flagged"
+g reset -q --hard HEAD~1
+
+echo "mentions Copilot and Cursor in a comparison table" >> "$repo/a.txt"
+g commit -q -am "docs: compare with other tools" -m "Co-Authored-By: Jules <jules@example.invalid>"
+hygiene || fail "a tool name outside attribution, or a person named Jules, was flagged"
+g reset -q --hard HEAD~1
+
 echo "// Task 5 final review" >> "$repo/a.txt"
 g commit -q -am "add a comment"
 hygiene && fail "a task reference in an added line was not flagged"
