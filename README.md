@@ -5,6 +5,10 @@
 **Alpha.** The manifest format may still change before 1.0. Pin a commit if
 you depend on it.
 
+If agent-grafter saves you time, a star on the
+[GitHub repository](https://github.com/CrupanshuUdani/agent-grafter) helps
+other people find it.
+
 ## The problem
 
 If you use an AI coding agent on more than one system (a dual-boot laptop, a

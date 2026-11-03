@@ -13,6 +13,8 @@ First release, an alpha. agent-grafter keeps one set of AI agent config and memo
 
 The work is split across two crates. `safelink` is a library that creates and removes links without administrator rights (NTFS junctions on Windows, symlinks elsewhere) and never follows a link into its target. `agent-grafter` is the command line tool built on it. The manifest format may still change before 1.0.
 
+If it saves you time, a star on the [GitHub repository](https://github.com/CrupanshuUdani/agent-grafter) helps other people find it.
+
 ### Added
 
 - Prebuilt binaries for Linux (x86_64/aarch64, static musl), macOS (x86_64/Apple Silicon) and Windows (x86_64/arm64) on GitHub Releases, with SHA256SUMS and THIRD-PARTY-LICENSES.
