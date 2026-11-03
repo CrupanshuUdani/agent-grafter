@@ -72,4 +72,44 @@ archive="$(bash "$here/release-package.sh" 1.2.3 x86_64-pc-windows-msvc "$tmp/ag
 [ "$archive" = "$tmp/out/agent-grafter-v1.2.3-x86_64-pc-windows-msvc.zip" ] || fail "unexpected zip path $archive"
 unzip -l "$archive" | grep -q "agent-grafter-v1.2.3-x86_64-pc-windows-msvc/agent-grafter.exe" || fail "zip missing exe"
 
+repo="$tmp/hygiene"
+mkdir "$repo"
+g() { git -C "$repo" -c user.name=t -c user.email=t@example.invalid "$@"; }
+g init -q
+echo one > "$repo/a.txt"
+g add a.txt
+g commit -q -m "start"
+base="$(g rev-parse HEAD)"
+hygiene() { (cd "$repo" && bash "$here/check-commit-hygiene.sh" "$base" HEAD) >/dev/null 2>&1; }
+
+echo two >> "$repo/a.txt"
+g commit -q -am "describe the change plainly"
+hygiene || fail "a plain commit was flagged"
+
+echo three >> "$repo/a.txt"
+g commit -q -am "tidy" -m "Claude-Session: https://example.invalid/x"
+hygiene && fail "an attribution trailer was not flagged"
+g reset -q --hard HEAD~1
+
+g commit -q --allow-empty -m "tidy" -m "Co-Authored-By: Codex <noreply@openai.invalid>"
+hygiene && fail "a Codex co-author trailer was not flagged"
+g reset -q --hard HEAD~1
+
+g commit -q --allow-empty -m "tidy" -m "Generated with Cursor"
+hygiene && fail "a 'Generated with' line naming another agent was not flagged"
+g reset -q --hard HEAD~1
+
+echo "mentions Copilot and Cursor in a comparison table" >> "$repo/a.txt"
+g commit -q -am "docs: compare with other tools" -m "Co-Authored-By: Jules <jules@example.invalid>"
+hygiene || fail "a tool name outside attribution, or a person named Jules, was flagged"
+g reset -q --hard HEAD~1
+
+echo "// Task 5 final review" >> "$repo/a.txt"
+g commit -q -am "add a comment"
+hygiene && fail "a task reference in an added line was not flagged"
+g reset -q --hard HEAD~1
+
+g commit -q --allow-empty -m "docs: fix the thing (Task S5-3)"
+hygiene && fail "a task reference in a commit message was not flagged"
+
 echo "release script tests: all passed"

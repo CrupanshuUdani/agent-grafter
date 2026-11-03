@@ -140,6 +140,20 @@ jobs:
       - name: Test (MSRV floor)
         run: cargo test --workspace --locked
 
+  commit-hygiene:
+    name: commit hygiene
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Messages and added lines describe the change
+        env:
+          BASE: origin/${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/check-commit-hygiene.sh "$BASE" "$HEAD_SHA"
+
   release-scripts:
     name: release scripts
     runs-on: ubuntu-latest
