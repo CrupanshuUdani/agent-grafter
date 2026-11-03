@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-03
+
+First release, an alpha. agent-grafter keeps one set of AI agent config and memory in step across machines, operating systems and agent tools. You declare the files in an `agent-grafter.toml` manifest. `copy` entries are copied from a source directory to each named target. `link` entries are linked, so what the agent writes lands in the source.
+
+The work is split across two crates. `safelink` is a library that creates and removes links without administrator rights (NTFS junctions on Windows, symlinks elsewhere) and never follows a link into its target. `agent-grafter` is the command line tool built on it. The manifest format may still change before 1.0.
+
+If it saves you time, a star on the [GitHub repository](https://github.com/CrupanshuUdani/agent-grafter) helps other people find it.
+
 ### Added
 
 - Prebuilt binaries for Linux (x86_64/aarch64, static musl), macOS (x86_64/Apple Silicon) and Windows (x86_64/arm64) on GitHub Releases, with SHA256SUMS and THIRD-PARTY-LICENSES.
@@ -24,6 +32,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Writes refuse to escape the declared destination through a symlinked intermediate path component.
 
-## [0.1.0-rc.1] - 2026-10-11
-
-Pre-release that exercises the release pipeline end to end. It carries the changes listed under Unreleased above, and it is not published to crates.io.
+[Unreleased]: https://github.com/CrupanshuUdani/agent-grafter/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/CrupanshuUdani/agent-grafter/releases/tag/v0.1.0

@@ -5,6 +5,10 @@
 **Alpha.** The manifest format may still change before 1.0. Pin a commit if
 you depend on it.
 
+If agent-grafter saves you time, a star on the
+[GitHub repository](https://github.com/CrupanshuUdani/agent-grafter) helps
+other people find it.
+
 ## The problem
 
 If you use an AI coding agent on more than one system (a dual-boot laptop, a
@@ -266,7 +270,7 @@ user's to lose (`crates/agent-grafter/src/unlink.rs`).
 | Linux | symlink | symlink | atomic copy | CI-tested |
 | macOS | symlink | symlink | atomic copy | CI-tested |
 | Windows, elevated / CI runner | NTFS junction | symlink | atomic copy | CI-tested — GitHub's `windows-latest` runners run elevated with UAC disabled, and CI asserts that (`.github/workflows/ci.yml`), so junction creation, classification, and safe removal are proven on a real Windows kernel |
-| Windows, standard user, Developer Mode off | NTFS junction (admin-free) | atomic copy (capability-detected fallback) | atomic copy | **Unverified by a human run.** CI cannot exercise this path — an elevated process always has `SeCreateSymbolicLinkPrivilege`, so it can't observe the standard-user `false` result. Covered today by `ForcedProbe(false)` unit tests and a manual `cargo run --example smoke` (see `crates/safelink/README.md`), not by an end-to-end run of the CLI on a real non-admin account |
+| Windows, standard user, Developer Mode off | NTFS junction (admin-free) | atomic copy (capability-detected fallback) | atomic copy | **Unverified by a human run.** CI cannot exercise this path — an elevated process always has `SeCreateSymbolicLinkPrivilege`, so it can't observe the standard-user `false` result. Covered today by `ForcedProbe(false)` unit tests and a manual `cargo run --example smoke` (see `crates/safelink/README.md`), not by an end-to-end run of the CLI on a real non-admin account. Tracked in [#40](https://github.com/CrupanshuUdani/agent-grafter/issues/40) |
 
 A file `link` entry is downgraded to a copy whenever the runtime
 capability probe (`safelink::capability::SymlinkProbe`) reports that a
