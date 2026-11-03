@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use crate::apply::Decision;
+use crate::apply::{Decision, with_target};
 use crate::manifest::{self, Manifest};
 
 /// The exit codes this CLI promises to scripts and hooks. These values are
@@ -171,12 +171,9 @@ pub fn run() -> ExitCode {
 /// during execution, `--dry-run` reports the same code a real run would, so a
 /// CI gate on exit 4 behaves the same either way.
 fn apply(args: &ApplyArgs) -> ExitCode {
-    let manifest = match manifest::read(&args.manifest) {
+    let manifest = match read_manifest_or_exit(&args.manifest) {
         Ok(m) => m,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::InvalidUsage;
-        }
+        Err(code) => return code,
     };
 
     let manifest_dir = manifest_dir(&args.manifest);
@@ -188,9 +185,7 @@ fn apply(args: &ApplyArgs) -> ExitCode {
         crate::apply::execute(&plan, &probe)
     };
 
-    for line in &report.lines {
-        println!("{line}");
-    }
+    print_lines(&report.lines);
 
     if report.failed {
         ExitCode::UnexpectedError
@@ -217,12 +212,9 @@ fn apply(args: &ApplyArgs) -> ExitCode {
 /// answers whether a symlink can be *created*, which is not a question this
 /// command asks — see that function's own doc comment.
 fn unlink(args: &UnlinkArgs) -> ExitCode {
-    let manifest = match manifest::read(&args.manifest) {
+    let manifest = match read_manifest_or_exit(&args.manifest) {
         Ok(m) => m,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::InvalidUsage;
-        }
+        Err(code) => return code,
     };
 
     let plan = crate::unlink::plan(&manifest, &manifest_dir(&args.manifest));
@@ -232,9 +224,7 @@ fn unlink(args: &UnlinkArgs) -> ExitCode {
         crate::unlink::execute(&plan)
     };
 
-    for line in &report.lines {
-        println!("{line}");
-    }
+    print_lines(&report.lines);
 
     if report.failed {
         ExitCode::UnexpectedError
@@ -294,6 +284,22 @@ fn init(args: &InitArgs) -> ExitCode {
     }
 }
 
+/// Read the manifest, or print why it could not be read and hand back the exit
+/// code every command uses for an unreadable or invalid manifest.
+fn read_manifest_or_exit(path: &Path) -> Result<Manifest, ExitCode> {
+    manifest::read(path).map_err(|e| {
+        eprintln!("{e}");
+        ExitCode::InvalidUsage
+    })
+}
+
+/// Print each report line to stdout.
+fn print_lines(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
+    }
+}
+
 /// The manifest's own directory: `parent()` for a real path, `.` for a bare
 /// file name (whose `parent()` is empty) — spelled explicitly rather than
 /// relied on as an accident of `Path::join("")`. `apply` and `doctor` both
@@ -316,21 +322,16 @@ fn manifest_dir(manifest_path: &Path) -> PathBuf {
 /// manifest, 1 for a genuine I/O failure while inspecting the filesystem,
 /// 3 for drift, 0 otherwise.
 fn doctor(args: &DoctorArgs) -> ExitCode {
-    let manifest = match manifest::read(&args.manifest) {
+    let manifest = match read_manifest_or_exit(&args.manifest) {
         Ok(m) => m,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::InvalidUsage;
-        }
+        Err(code) => return code,
     };
 
     let dir = manifest_dir(&args.manifest);
     let probe = safelink::capability::RealProbe;
     let report = crate::doctor::diagnose(&manifest, &args.manifest, &dir, &probe);
 
-    for line in &report.lines {
-        println!("{line}");
-    }
+    print_lines(&report.lines);
 
     if report.failed {
         ExitCode::UnexpectedError
@@ -360,12 +361,9 @@ fn doctor(args: &DoctorArgs) -> ExitCode {
 /// nothing to check them against; that is drift, not a silent "in sync" —
 /// there is no destination anywhere that could be correctly materialized.
 fn status(args: &StatusArgs) -> ExitCode {
-    let manifest = match manifest::read(&args.manifest) {
+    let manifest = match read_manifest_or_exit(&args.manifest) {
         Ok(m) => m,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::InvalidUsage;
-        }
+        Err(code) => return code,
     };
 
     let (lines, drifted) = status_report(
@@ -374,9 +372,7 @@ fn status(args: &StatusArgs) -> ExitCode {
         &safelink::capability::RealProbe,
     );
 
-    for line in &lines {
-        println!("{line}");
-    }
+    print_lines(&lines);
 
     if drifted {
         ExitCode::DriftFound
@@ -424,19 +420,24 @@ fn status_report(
         .iter()
         .filter(|p| manifest.link.contains(&p.declared))
     {
-        let target = planned.target.as_deref();
         match &planned.decision {
             Decision::Same => {
-                lines.push(with_target(target, &format!("in sync: {}", planned.label)));
+                lines.push(with_target(
+                    &planned.target,
+                    &format!("in sync: {}", planned.label),
+                ));
             }
             Decision::Write => {
                 drifted = true;
-                lines.push(with_target(target, &format!("drift: {}", planned.label)));
+                lines.push(with_target(
+                    &planned.target,
+                    &format!("drift: {}", planned.label),
+                ));
             }
             Decision::Refused(reason) => {
                 drifted = true;
                 lines.push(with_target(
-                    target,
+                    &planned.target,
                     &format!("drift: {}: {reason}", planned.label),
                 ));
             }
@@ -444,16 +445,6 @@ fn status_report(
     }
 
     (lines, drifted)
-}
-
-/// `"{target}: {message}"`, or just the message when the manifest declares no
-/// targets. Matches the prefixing `apply` and `doctor` already use, so all
-/// three commands' output reads the same way.
-fn with_target(target: Option<&str>, message: &str) -> String {
-    match target {
-        Some(name) => format!("{name}: {message}"),
-        None => message.to_string(),
-    }
 }
 
 #[cfg(test)]

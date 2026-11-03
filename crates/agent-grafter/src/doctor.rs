@@ -117,7 +117,7 @@ fn report_environment(
             apply::resolved_source(manifest, manifest_dir).display()
         ),
     ];
-    for name in sorted_target_names(manifest) {
+    for name in manifest.sorted_target_names() {
         let target = &manifest.targets[name];
         lines.push(format!("target {name}: {}", target.dest.display()));
     }
@@ -387,7 +387,7 @@ fn report_backup_roots(manifest: &Manifest) -> (Vec<String>, bool, bool) {
     let mut failed = false;
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
-    for name in sorted_target_names(manifest) {
+    for name in manifest.sorted_target_names() {
         let target = &manifest.targets[name];
         let backups = target.dest.join(BACKUP_DIR);
         if !seen.insert(backups.clone()) {
@@ -482,16 +482,6 @@ fn report_windows_environment(facts: &dyn crate::winenv::WindowsFacts) -> Vec<St
             }
         ),
     ]
-}
-
-/// Target names in a deterministic (sorted) order, for the same reason
-/// `cli::sorted_target_names` sorts them: `Manifest::targets` is a
-/// `HashMap`, whose iteration order is otherwise unspecified, and a report
-/// whose target order shuffles between runs is one nobody can diff.
-fn sorted_target_names(manifest: &Manifest) -> Vec<&String> {
-    let mut names: Vec<&String> = manifest.targets.keys().collect();
-    names.sort();
-    names
 }
 
 #[cfg(test)]

@@ -200,8 +200,7 @@ pub fn plan(manifest: &Manifest, manifest_dir: &Path) -> Plan {
     let mut removals = Vec::new();
     let mut notes = Vec::new();
 
-    let mut target_names: Vec<&String> = manifest.targets.keys().collect();
-    target_names.sort();
+    let target_names = manifest.sorted_target_names();
 
     if target_names.is_empty() {
         // Declared entries with nowhere they could have been materialized.

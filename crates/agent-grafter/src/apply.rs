@@ -304,13 +304,12 @@ fn describe_prune(prune: &PlannedPrune, hypothetical: bool) -> String {
 /// support symlinks.
 pub fn plan(manifest: &Manifest, manifest_dir: &Path, probe: &dyn SymlinkProbe) -> Plan {
     let run_timestamp = utc_timestamp(SystemTime::now());
-    let source_root = absolutize(&manifest_dir.join(&manifest.source));
+    let source_root = resolved_source(manifest, manifest_dir);
     let mut entries = Vec::new();
     let mut prunes = Vec::new();
     let mut notes = Vec::new();
 
-    let mut target_names: Vec<&String> = manifest.targets.keys().collect();
-    target_names.sort();
+    let target_names = manifest.sorted_target_names();
 
     if target_names.is_empty() {
         // Declared entries with nowhere to go. Reporting nothing would be dishonest;
