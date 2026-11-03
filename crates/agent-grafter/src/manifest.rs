@@ -29,6 +29,17 @@ pub struct Manifest {
     pub targets: HashMap<String, Target>,
 }
 
+impl Manifest {
+    /// Target names in a deterministic (sorted) order. `targets` is a
+    /// `HashMap`, whose iteration order is otherwise unspecified, and a report
+    /// whose target order shuffles between runs is one nobody can diff.
+    pub fn sorted_target_names(&self) -> Vec<&String> {
+        let mut names: Vec<&String> = self.targets.keys().collect();
+        names.sort();
+        names
+    }
+}
+
 /// One `[targets.*]` destination.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Target {

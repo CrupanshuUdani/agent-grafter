@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use crate::capability::SymlinkProbe;
+use crate::capability::{SymlinkProbe, symlink_file};
 use crate::copy::copy_atomic;
 use crate::create::create_dir_link;
 use crate::op::{Entry, LinkOp};
@@ -265,16 +265,6 @@ fn annotate_dir_link_error(dest: &Path, probe: &dyn SymlinkProbe, e: io::Error) 
             dest.display()
         ),
     )
-}
-
-#[cfg(windows)]
-fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_file(target, link)
-}
-
-#[cfg(unix)]
-fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
 }
 
 #[cfg(test)]

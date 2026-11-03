@@ -103,12 +103,12 @@ impl SymlinkProbe for ForcedProbe {
 }
 
 #[cfg(windows)]
-fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+pub(crate) fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(target, link)
 }
 
 #[cfg(unix)]
-fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+pub(crate) fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
