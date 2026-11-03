@@ -309,7 +309,10 @@ jobs:
             echo "::error::a $TAG release already exists; delete it with 'gh release delete $TAG --yes' (this keeps the tag), then re-run"
             exit 1
           fi
-          gh release create "$TAG" --draft --verify-tag --title "agent-grafter $TAG" --notes-file notes.md dist/*
+          # A suffix such as -rc.1 marks a pre-release, which `releases/latest` skips.
+          flags=()
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" --draft --verify-tag --title "agent-grafter $TAG" --notes-file notes.md "${flags[@]}" dist/*
       - name: Upload the dry run
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4

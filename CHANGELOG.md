@@ -23,3 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Writes refuse to escape the declared destination through a symlinked intermediate path component.
+
+## [0.1.0-rc.1] - 2026-10-11
+
+Pre-release that exercises the release pipeline end to end. It carries the changes listed under Unreleased above, and it is not published to crates.io.
