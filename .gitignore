@@ -20,6 +20,7 @@ Cargo.lock.bak
 /.aider*
 /.windsurf/
 /.cline/
+/.no-amnesia/
 CLAUDE.md
 AGENTS.md
 /.mcp.json
